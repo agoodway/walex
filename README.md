@@ -388,3 +388,12 @@ You'll need a local Postgres instance running
 MIX_ENV=test mix walex.setup
 MIX_ENV=test mix test
 ```
+
+### Optional Custom DB Settings
+
+If you have a customized local postgresql server running, you can override the default user, pass etc by setting the following ENV vars. These will then take precedence in tests and `mix walex.setup`.
+
+* PGUSER
+* PGPASSWORD
+* PGHOST
+* PGPORT

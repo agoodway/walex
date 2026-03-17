@@ -1,14 +1,16 @@
 defmodule WalEx.DatabaseTest do
   use ExUnit.Case, async: false
   import WalEx.Support.TestHelpers
+  import ExUnit.CaptureLog
   alias WalEx.Supervisor, as: WalExSupervisor
 
   require Logger
 
-  @hostname "localhost"
-  @username "postgres"
-  @password "postgres"
+  @hostname System.get_env("PGHOST", "localhost")
+  @username System.get_env("PGUSER", "postgres")
+  @password System.get_env("PGPASSWORD", "postgres")
   @database "todos_test"
+  @port String.to_integer(System.get_env("PGPORT", "5432"))
 
   @base_configs [
     name: :todos,
@@ -16,7 +18,7 @@ defmodule WalEx.DatabaseTest do
     username: @username,
     password: @password,
     database: @database,
-    port: 5432,
+    port: @port,
     subscriptions: ["user", "todo"],
     publication: "events",
     modules: [TestModule]
@@ -31,7 +33,7 @@ defmodule WalEx.DatabaseTest do
 
   describe "logical replication" do
     setup do
-      {:ok, database_pid} = start_database()
+      {{:ok, database_pid}, _log} = with_log(fn -> start_database() end)
       pg_drop_slots(database_pid)
 
       %{database_pid: database_pid}
@@ -46,16 +48,20 @@ defmodule WalEx.DatabaseTest do
       Process.flag(:trap_exit, true)
       config = Keyword.put(@base_configs, :publication, "non_existent_publication")
 
-      {_pid, ref} =
-        spawn_monitor(fn -> WalExSupervisor.start_link(config) end)
+      capture_log(fn ->
+        {_pid, ref} =
+          spawn_monitor(fn -> WalExSupervisor.start_link(config) end)
 
-      assert_receive {:DOWN, ^ref, _, _, {:shutdown, _}}
+        assert_receive {:DOWN, ^ref, _, _, {:shutdown, _}}
+      end)
     end
 
     test "should start replication slot", %{database_pid: database_pid} do
-      assert {:ok, replication_pid} = WalExSupervisor.start_link(@base_configs)
-      assert is_pid(replication_pid)
-      assert [@replication_slot] = pg_replication_slots(database_pid)
+      capture_log(fn ->
+        assert {:ok, replication_pid} = WalExSupervisor.start_link(@base_configs)
+        assert is_pid(replication_pid)
+        assert [@replication_slot] = pg_replication_slots(database_pid)
+      end)
     end
 
     test "user-defined slot_name", %{database_pid: database_pid} do
@@ -63,150 +69,162 @@ defmodule WalEx.DatabaseTest do
 
       config = Keyword.put(@base_configs, :slot_name, slot_name)
 
-      assert {:ok, replication_pid} = WalExSupervisor.start_link(config)
+      capture_log(fn ->
+        assert {:ok, replication_pid} = WalExSupervisor.start_link(config)
 
-      assert is_pid(replication_pid)
-      assert [slot] = pg_replication_slots(database_pid)
-      assert Map.fetch!(slot, "slot_name") == slot_name
+        assert is_pid(replication_pid)
+        assert [slot] = pg_replication_slots(database_pid)
+        assert Map.fetch!(slot, "slot_name") == slot_name
+      end)
     end
 
     test "should re-initiate after forcing database process termination" do
-      assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
-      database_pid = get_database_pid(supervisor_pid)
+      capture_log(fn ->
+        assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
+        database_pid = get_database_pid(supervisor_pid)
 
-      assert is_pid(database_pid)
-      assert [@replication_slot] = pg_replication_slots(database_pid)
+        assert is_pid(database_pid)
+        assert [@replication_slot] = pg_replication_slots(database_pid)
 
-      assert Process.exit(database_pid, :kill)
-             |> tap_debug("Forcefully killed database connection: ")
+        assert Process.exit(database_pid, :kill)
+               |> tap_debug("Forcefully killed database connection: ")
 
-      refute Process.info(database_pid)
+        refute Process.info(database_pid)
 
-      new_database_pid = get_database_pid(supervisor_pid)
+        new_database_pid = get_database_pid(supervisor_pid)
 
-      assert is_pid(new_database_pid)
-      refute database_pid == new_database_pid
-      assert_update_user(new_database_pid)
+        assert is_pid(new_database_pid)
+        refute database_pid == new_database_pid
+        assert_update_user(new_database_pid)
+      end)
     end
 
     test "should re-initiate after database connection restarted by supervisor" do
-      assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
-      database_pid = get_database_pid(supervisor_pid)
+      capture_log(fn ->
+        assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
+        database_pid = get_database_pid(supervisor_pid)
 
-      Supervisor.terminate_child(supervisor_pid, DBConnection.ConnectionPool)
-      |> tap_debug("Supervisor terminated database connection: ")
+        Supervisor.terminate_child(supervisor_pid, DBConnection.ConnectionPool)
+        |> tap_debug("Supervisor terminated database connection: ")
 
-      assert :undefined == get_database_pid(supervisor_pid)
+        assert :undefined == get_database_pid(supervisor_pid)
 
-      refute Process.info(database_pid)
+        refute Process.info(database_pid)
 
-      Supervisor.restart_child(supervisor_pid, DBConnection.ConnectionPool)
-      |> tap_debug("Supervisor restarted database connection: ")
+        Supervisor.restart_child(supervisor_pid, DBConnection.ConnectionPool)
+        |> tap_debug("Supervisor restarted database connection: ")
 
-      wait_for_restart()
+        wait_for_restart()
 
-      restarted_database_pid = get_database_pid(supervisor_pid)
+        restarted_database_pid = get_database_pid(supervisor_pid)
 
-      assert is_pid(restarted_database_pid)
-      refute database_pid == restarted_database_pid
-      assert_update_user(restarted_database_pid)
+        assert is_pid(restarted_database_pid)
+        refute database_pid == restarted_database_pid
+        assert_update_user(restarted_database_pid)
 
-      assert [@replication_slot | _replication_slots] =
-               pg_replication_slots(restarted_database_pid)
+        assert [@replication_slot | _replication_slots] =
+                 pg_replication_slots(restarted_database_pid)
+      end)
     end
 
     test "should re-initiate after database connection terminated" do
-      assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
-      database_pid = get_database_pid(supervisor_pid)
+      capture_log(fn ->
+        assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
+        database_pid = get_database_pid(supervisor_pid)
 
-      assert {:error,
-              %DBConnection.ConnectionError{
-                message: "tcp recv: closed",
-                severity: :error,
-                reason: :error
-              }} == terminate_database_connection(database_pid, @username)
+        assert {:error,
+                %DBConnection.ConnectionError{
+                  message: "tcp recv: closed",
+                  severity: :error,
+                  reason: :closed
+                }} == terminate_database_connection(database_pid, @username)
 
-      assert_update_user(database_pid)
+        assert_update_user(database_pid)
 
-      assert [@replication_slot | _replication_slots] = pg_replication_slots(database_pid)
+        assert [@replication_slot | _replication_slots] = pg_replication_slots(database_pid)
+      end)
     end
 
     test "should re-initiate after database restart" do
-      assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
-      database_pid = get_database_pid(supervisor_pid)
+      capture_log(fn ->
+        assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
+        database_pid = get_database_pid(supervisor_pid)
 
-      assert is_pid(database_pid)
-      assert [@replication_slot | _replication_slots] = pg_replication_slots(database_pid)
+        assert is_pid(database_pid)
+        assert [@replication_slot | _replication_slots] = pg_replication_slots(database_pid)
 
-      assert Process.exit(database_pid, :kill)
-             |> tap_debug("Forcefully killed database connection: ")
+        assert Process.exit(database_pid, :kill)
+               |> tap_debug("Forcefully killed database connection: ")
 
-      assert :ok == pg_restart()
+        assert :ok == pg_restart()
 
-      new_database_pid = get_database_pid(supervisor_pid)
+        new_database_pid = get_database_pid(supervisor_pid)
 
-      assert is_pid(new_database_pid)
-      refute database_pid == new_database_pid
-      assert_update_user(new_database_pid)
+        assert is_pid(new_database_pid)
+        refute database_pid == new_database_pid
+        assert_update_user(new_database_pid)
+      end)
     end
 
     test "durable replication slot", %{database_pid: database_pid} do
-      assert [] = pg_replication_slots(database_pid)
+      capture_log(fn ->
+        assert [] = pg_replication_slots(database_pid)
 
-      slot_name = "durable_slot"
-      durable_opts = Keyword.merge(@base_configs, durable_slot: true, slot_name: slot_name)
+        slot_name = "durable_slot"
+        durable_opts = Keyword.merge(@base_configs, durable_slot: true, slot_name: slot_name)
 
-      durable_slot = %{
-        "active" => true,
-        "slot_name" => slot_name,
-        "slot_type" => "logical",
-        "temporary" => false
-      }
+        durable_slot = %{
+          "active" => true,
+          "slot_name" => slot_name,
+          "slot_type" => "logical",
+          "temporary" => false
+        }
 
-      inactive_slot = %{durable_slot | "active" => false}
+        inactive_slot = %{durable_slot | "active" => false}
 
-      start_supervised!({WalExSupervisor, durable_opts},
-        restart: :temporary,
-        id: :ok_supervisor
-      )
-
-      assert [^durable_slot] = pg_replication_slots(database_pid)
-
-      other_app_opts = Keyword.replace!(durable_opts, :name, :other_app)
-
-      # Start another supervisor with the same slot name
-      {:ok, pid} =
-        start_supervised({WalExSupervisor, other_app_opts},
+        start_supervised!({WalExSupervisor, durable_opts},
           restart: :temporary,
-          id: :other_app_supervisor
+          id: :ok_supervisor
         )
 
-      # Wait for the retry mechanism to complete
-      Process.sleep(10_000)
+        assert [^durable_slot] = pg_replication_slots(database_pid)
 
-      # Check that the other app is still running and waiting
-      assert Process.alive?(pid)
+        other_app_opts = Keyword.replace!(durable_opts, :name, :other_app)
 
-      # The original slot should still be active
-      assert [^durable_slot] = pg_replication_slots(database_pid)
+        # Start another supervisor with the same slot name
+        {:ok, pid} =
+          start_supervised({WalExSupervisor, other_app_opts},
+            restart: :temporary,
+            id: :other_app_supervisor
+          )
 
-      # Stop the first supervisor
-      stop_supervised(:ok_supervisor)
+        # Wait for the retry mechanism to complete
+        Process.sleep(10_000)
 
-      # Sleep to make sure that Postgres detects that the connection is closed
-      # and the second supervisor has time to activate the slot
-      Process.sleep(10_000)
+        # Check that the other app is still running and waiting
+        assert Process.alive?(pid)
 
-      # The slot should now be active under the second supervisor
-      assert [^durable_slot] = pg_replication_slots(database_pid)
+        # The original slot should still be active
+        assert [^durable_slot] = pg_replication_slots(database_pid)
 
-      # Clean up
-      stop_supervised(:other_app_supervisor)
+        # Stop the first supervisor
+        stop_supervised(:ok_supervisor)
 
-      # Wait for the slot to become inactive after stopping all supervisors
-      Process.sleep(5_000)
-      [slot] = pg_replication_slots(database_pid)
-      assert slot == inactive_slot
+        # Sleep to make sure that Postgres detects that the connection is closed
+        # and the second supervisor has time to activate the slot
+        Process.sleep(10_000)
+
+        # The slot should now be active under the second supervisor
+        assert [^durable_slot] = pg_replication_slots(database_pid)
+
+        # Clean up
+        stop_supervised(:other_app_supervisor)
+
+        # Wait for the slot to become inactive after stopping all supervisors
+        Process.sleep(5_000)
+        [slot] = pg_replication_slots(database_pid)
+        assert slot == inactive_slot
+      end)
     end
   end
 
@@ -295,7 +313,7 @@ defmodule WalEx.DatabaseTest do
         Logger.debug("PostgreSQL installed via Postgres.app.")
         @mac_app_path
 
-      true ->
+      _ ->
         raise "PostgreSQL not installed via Postgres.app or homebrew."
     end
   end
