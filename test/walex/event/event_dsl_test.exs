@@ -1,16 +1,18 @@
 defmodule WalEx.EventDslTest do
   use ExUnit.Case, async: false
   import WalEx.Support.TestHelpers
+  import ExUnit.CaptureLog
 
   alias WalEx.Events.EventModules, as: EventsEventModules
   alias WalEx.Events.Supervisor, as: EventsSupervisor
   alias WalEx.Supervisor, as: WalExSupervisor
 
   @app_name :test_app
-  @hostname "localhost"
-  @username "postgres"
-  @password "postgres"
+  @hostname System.get_env("PGHOST", "localhost")
+  @username System.get_env("PGUSER", "postgres")
+  @password System.get_env("PGPASSWORD", "postgres")
   @database "todos_test"
+  @port String.to_integer(System.get_env("PGPORT", "5432"))
 
   @dsl_base_configs [
     name: @app_name,
@@ -18,7 +20,7 @@ defmodule WalEx.EventDslTest do
     username: @username,
     password: @password,
     database: @database,
-    port: 5432,
+    port: @port,
     subscriptions: ["user", "todo"],
     publication: ["events"],
     modules: [TestApp.DslTestModule]
@@ -26,8 +28,10 @@ defmodule WalEx.EventDslTest do
 
   describe "on_event/2" do
     setup do
-      {:ok, database_pid} = start_database(@dsl_base_configs)
-      {:ok, supervisor_pid} = WalExSupervisor.start_link(@dsl_base_configs)
+      {{:ok, database_pid}, _log} = with_log(fn -> start_database(@dsl_base_configs) end)
+
+      {{:ok, supervisor_pid}, _log} =
+        with_log(fn -> WalExSupervisor.start_link(@dsl_base_configs) end)
 
       %{database_pid: database_pid, supervisor_pid: supervisor_pid}
     end
@@ -59,8 +63,10 @@ defmodule WalEx.EventDslTest do
 
   describe "on_update/4" do
     setup do
-      {:ok, database_pid} = start_database(@dsl_base_configs)
-      {:ok, supervisor_pid} = WalExSupervisor.start_link(@dsl_base_configs)
+      {{:ok, database_pid}, _log} = with_log(fn -> start_database(@dsl_base_configs) end)
+
+      {{:ok, supervisor_pid}, _log} =
+        with_log(fn -> WalExSupervisor.start_link(@dsl_base_configs) end)
 
       %{database_pid: database_pid, supervisor_pid: supervisor_pid}
     end

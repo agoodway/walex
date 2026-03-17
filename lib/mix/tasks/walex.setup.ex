@@ -7,9 +7,9 @@ defmodule Mix.Tasks.Walex.Setup do
 
   @test_database "todos_test"
   @base_configs [
-    hostname: "localhost",
-    username: "postgres",
-    password: "postgres",
+    hostname: System.get_env("PGHOST", "localhost"),
+    username: System.get_env("PGUSER", "postgres"),
+    password: System.get_env("PGPASSWORD", "postgres"),
     database: @test_database
   ]
 

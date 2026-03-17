@@ -1,19 +1,19 @@
 defmodule Mix.Tasks.Walex.Helpers do
   @config %{
-    hostname: "localhost",
-    username: "postgres",
-    password: "postgres",
-    port: 5432
+    hostname: System.get_env("PGHOST", "localhost"),
+    username: System.get_env("PGUSER", "postgres"),
+    password: System.get_env("PGPASSWORD", "postgres"),
+    port: String.to_integer(System.get_env("PGPORT", "5432"))
   }
 
   @moduledoc false
   def create_database(database_name) do
-    "-c \"CREATE DATABASE #{database_name};\""
+    "-d postgres -c \"CREATE DATABASE #{database_name};\""
     |> database_cmd()
   end
 
   def drop_database(database_name) do
-    "-c \"DROP DATABASE #{database_name};\""
+    "-d postgres -c \"DROP DATABASE #{database_name};\""
     |> database_cmd()
   end
 
