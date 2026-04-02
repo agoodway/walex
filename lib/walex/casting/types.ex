@@ -69,17 +69,18 @@ defmodule WalEx.Casting.Types do
   def cast_record(record, "decimal"), do: cast_record(record, "numeric")
 
   def cast_record(record, "timestamp") when is_binary(record) do
-    with {:ok, %NaiveDateTime{} = naive_date_time} <- Timex.parse(record, "{RFC3339}"),
-         %DateTime{} = date_time <- Timex.to_datetime(naive_date_time) do
-      date_time
-    else
-      _ -> record
+    case NaiveDateTime.from_iso8601(record) do
+      {:ok, %NaiveDateTime{} = naive} ->
+        DateTime.from_naive!(naive, "Etc/UTC")
+
+      _ ->
+        record
     end
   end
 
   def cast_record(record, "timestamptz") when is_binary(record) do
-    case Timex.parse(record, "{RFC3339}") do
-      {:ok, %DateTime{} = date_time} ->
+    case DateTime.from_iso8601(record) do
+      {:ok, %DateTime{} = date_time, _offset} ->
         date_time
 
       _ ->
@@ -258,8 +259,8 @@ defmodule WalEx.Casting.Types do
             nil
 
           elem ->
-            case Timex.parse(elem, "{RFC3339}") do
-              {:ok, %DateTime{} = dt} -> dt
+            case DateTime.from_iso8601(elem) do
+              {:ok, %DateTime{} = dt, _offset} -> dt
               _ -> elem
             end
         end)
@@ -278,11 +279,12 @@ defmodule WalEx.Casting.Types do
             nil
 
           elem ->
-            with {:ok, %NaiveDateTime{} = naive} <- Timex.parse(elem, "{RFC3339}"),
-                 %DateTime{} = dt <- Timex.to_datetime(naive) do
-              dt
-            else
-              _ -> elem
+            case NaiveDateTime.from_iso8601(elem) do
+              {:ok, %NaiveDateTime{} = naive} ->
+                DateTime.from_naive!(naive, "Etc/UTC")
+
+              _ ->
+                elem
             end
         end)
 

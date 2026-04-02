@@ -63,7 +63,7 @@ defmodule WalEx.Casting.TypesTest do
 
   describe "timestamp casting" do
     test "casts timestamp" do
-      result = Types.cast_record("2024-01-15T10:30:00", "timestamp")
+      result = Types.cast_record("2024-01-15 10:30:00.123456", "timestamp")
       assert %DateTime{} = result
       assert result.year == 2024
       assert result.month == 1
@@ -71,7 +71,7 @@ defmodule WalEx.Casting.TypesTest do
     end
 
     test "casts timestamptz" do
-      result = Types.cast_record("2024-01-15T10:30:00Z", "timestamptz")
+      result = Types.cast_record("2024-01-15 10:30:00.123456+00", "timestamptz")
       assert %DateTime{} = result
       assert result.year == 2024
       assert result.time_zone == "Etc/UTC"
@@ -240,7 +240,10 @@ defmodule WalEx.Casting.TypesTest do
   describe "timestamp array casting" do
     test "casts timestamptz arrays" do
       result =
-        Types.cast_record(~s({\"2024-01-15T10:30:00Z\",\"2024-01-16T11:45:00Z\"}), "_timestamptz")
+        Types.cast_record(
+          ~s({"2024-01-15 10:30:00.123+00","2024-01-16 11:45:00.456+00"}),
+          "_timestamptz"
+        )
 
       assert [dt1, dt2] = result
       assert %DateTime{} = dt1
