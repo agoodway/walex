@@ -33,7 +33,6 @@ defmodule WalEx.MixProject do
       {:postgrex, ">= 0.20.0"},
       {:decimal, "~> 2.3.0"},
       {:jason, "~> 1.4"},
-      {:timex, "~> 3.7.13"},
 
       # Dev & Test
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
