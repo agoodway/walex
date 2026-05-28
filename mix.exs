@@ -31,7 +31,7 @@ defmodule WalEx.MixProject do
   defp deps do
     [
       {:postgrex, ">= 0.20.0"},
-      {:decimal, "~> 2.3.0"},
+      {:decimal, "~> 3.1"},
       {:jason, "~> 1.4"},
 
       # Dev & Test
