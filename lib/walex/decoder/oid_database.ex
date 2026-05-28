@@ -19,6 +19,7 @@ defmodule WalEx.OidDatabase do
       "jsonb"
 
   """
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def name_for_type_id(type_id) do
     case type_id do
       16 -> "bool"

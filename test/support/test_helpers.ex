@@ -1,4 +1,10 @@
 defmodule WalEx.Support.TestHelpers do
+  @moduledoc """
+  Shared helpers for the WalEx test suite: Postgrex connection setup,
+  query convenience wrappers, and small fixtures (e.g. `update_user/1`)
+  that exercise the replication pipeline against the test database.
+  """
+
   require Logger
 
   def tap_debug(to_tap, label) do

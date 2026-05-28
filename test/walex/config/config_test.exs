@@ -2,7 +2,8 @@ defmodule WalEx.ConfigTest do
   use ExUnit.Case, async: false
 
   alias WalEx.Config
-  alias Config.Registry, as: WalExRegistry
+  alias WalEx.Config.Registry, as: WalExRegistry
+  alias WalEx.Replication.Publisher
 
   @app_name :my_app
   @hostname "hostname"
@@ -94,7 +95,7 @@ defmodule WalEx.ConfigTest do
                event_relay: nil,
                slot_name: "my_app_walex",
                durable_slot: false,
-               message_middleware: &WalEx.Replication.Publisher.process_message_async/2
+               message_middleware: &Publisher.process_message_async/2
              ] == Config.get_configs(@app_name)
     end
   end

@@ -3,8 +3,8 @@ defmodule WalEx.SupervisorTest do
   import WalEx.Support.TestHelpers
   import ExUnit.CaptureLog
 
-  alias WalEx.Supervisor, as: WalExSupervisor
   alias WalEx.Replication
+  alias WalEx.Supervisor, as: WalExSupervisor
 
   @base_configs [
     name: :test_name,

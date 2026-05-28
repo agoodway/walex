@@ -1,13 +1,22 @@
 defmodule WalEx.Replication.Supervisor do
-  @moduledoc false
+  @moduledoc """
+  Supervises the per-app replication pipeline (`WalEx.Replication.Publisher`
+  and `WalEx.Replication.Server`).
+
+  Uses a `:one_for_all` strategy because the Publisher's in-memory
+  Relation/Type tables must stay in sync with the Server's LSN stream — see
+  the inline comments in `init/1` for the failure-mode analysis.
+  """
 
   use Supervisor
 
+  alias WalEx.Config.Registry, as: WalExRegistry
   alias WalEx.Replication.{Publisher, Server}
 
+  @doc "Starts the replication supervisor registered under the app name."
   def start_link(opts) do
     app_name = Keyword.get(opts, :app_name)
-    name = WalEx.Config.Registry.set_name(:set_supervisor, __MODULE__, app_name)
+    name = WalExRegistry.set_name(:set_supervisor, __MODULE__, app_name)
 
     Supervisor.start_link(__MODULE__, opts, name: name)
   end

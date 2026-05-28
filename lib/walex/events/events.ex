@@ -5,9 +5,8 @@ defmodule WalEx.Events do
 
   use GenServer
 
-  alias WalEx.{Events, Config}
-  alias Config.Registry
-  alias Events.EventModules
+  alias WalEx.Config.Registry
+  alias WalEx.Events.EventModules
 
   def start_link(opts) do
     name =

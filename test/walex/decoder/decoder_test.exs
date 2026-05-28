@@ -9,14 +9,14 @@ defmodule WalEx.DecoderTest do
   alias WalEx.Decoder.Messages.{
     Begin,
     Commit,
+    Delete,
+    Insert,
     Origin,
     Relation,
     Relation.Column,
-    Insert,
-    Update,
-    Delete,
     Truncate,
-    Type
+    Type,
+    Update
   }
 
   test "decodes begin messages" do
@@ -57,7 +57,7 @@ defmodule WalEx.DecoderTest do
                97, 114, 0, 0, 0, 0, 25, 255, 255, 255, 255, 1, 105, 100, 0, 0, 0, 0, 23, 255, 255,
                255, 255>>
            ) == %Relation{
-             id: 24576,
+             id: 24_576,
              namespace: "public",
              name: "foo",
              replica_identity: :default,
@@ -82,7 +82,7 @@ defmodule WalEx.DecoderTest do
                0, 116, 101, 115, 116, 0, 0, 0, 6, 164, 255, 255, 255, 255>>
            ) ==
              %WalEx.Decoder.Messages.Relation{
-               id: 18268,
+               id: 18_268,
                name: "temp",
                namespace: "public",
                replica_identity: :default,
@@ -103,7 +103,7 @@ defmodule WalEx.DecoderTest do
                95, 116, 121, 112, 101, 0>>
            ) ==
              %Type{
-               id: 32820,
+               id: 32_820,
                namespace: "public",
                name: "example_type"
              }
@@ -115,7 +115,7 @@ defmodule WalEx.DecoderTest do
                %Truncate{
                  number_of_relations: 1,
                  options: [],
-                 truncated_relations: [24576]
+                 truncated_relations: [24_576]
                }
     end
 
@@ -124,7 +124,7 @@ defmodule WalEx.DecoderTest do
                %Truncate{
                  number_of_relations: 1,
                  options: [:cascade],
-                 truncated_relations: [24576]
+                 truncated_relations: [24_576]
                }
     end
 
@@ -133,7 +133,7 @@ defmodule WalEx.DecoderTest do
                %Truncate{
                  number_of_relations: 1,
                  options: [:restart_identity],
-                 truncated_relations: [24576]
+                 truncated_relations: [24_576]
                }
     end
   end
@@ -144,7 +144,7 @@ defmodule WalEx.DecoderTest do
                <<73, 0, 0, 96, 0, 78, 0, 2, 116, 0, 0, 0, 3, 98, 97, 122, 116, 0, 0, 0, 3, 53, 54,
                  48>>
              ) == %Insert{
-               relation_id: 24576,
+               relation_id: 24_576,
                tuple_data: {"baz", "560"}
              }
     end
@@ -153,7 +153,7 @@ defmodule WalEx.DecoderTest do
       assert WalEx.Decoder.decode_message(
                <<73, 0, 0, 96, 0, 78, 0, 2, 110, 116, 0, 0, 0, 3, 53, 54, 48>>
              ) == %Insert{
-               relation_id: 24576,
+               relation_id: 24_576,
                tuple_data: {nil, "560"}
              }
     end
@@ -162,7 +162,7 @@ defmodule WalEx.DecoderTest do
       assert WalEx.Decoder.decode_message(
                <<73, 0, 0, 96, 0, 78, 0, 2, 117, 116, 0, 0, 0, 3, 53, 54, 48>>
              ) == %Insert{
-               relation_id: 24576,
+               relation_id: 24_576,
                tuple_data: {:unchanged_toast, "560"}
              }
     end
@@ -172,7 +172,7 @@ defmodule WalEx.DecoderTest do
                <<85, 0, 0, 96, 0, 78, 0, 2, 116, 0, 0, 0, 7, 101, 120, 97, 109, 112, 108, 101,
                  116, 0, 0, 0, 3, 53, 54, 48>>
              ) == %Update{
-               relation_id: 24576,
+               relation_id: 24_576,
                changed_key_tuple_data: nil,
                old_tuple_data: nil,
                tuple_data: {"example", "560"}
@@ -185,7 +185,7 @@ defmodule WalEx.DecoderTest do
                  48, 78, 0, 2, 116, 0, 0, 0, 7, 101, 120, 97, 109, 112, 108, 101, 116, 0, 0, 0, 3,
                  53, 54, 48>>
              ) == %Update{
-               relation_id: 24576,
+               relation_id: 24_576,
                changed_key_tuple_data: nil,
                old_tuple_data: {"baz", "560"},
                tuple_data: {"example", "560"}
@@ -197,7 +197,7 @@ defmodule WalEx.DecoderTest do
                <<85, 0, 0, 96, 0, 75, 0, 2, 116, 0, 0, 0, 3, 98, 97, 122, 110, 78, 0, 2, 116, 0,
                  0, 0, 7, 101, 120, 97, 109, 112, 108, 101, 116, 0, 0, 0, 3, 53, 54, 48>>
              ) == %Update{
-               relation_id: 24576,
+               relation_id: 24_576,
                changed_key_tuple_data: {"baz", nil},
                old_tuple_data: nil,
                tuple_data: {"example", "560"}
@@ -209,7 +209,7 @@ defmodule WalEx.DecoderTest do
                <<68, 0, 0, 96, 0, 75, 0, 2, 116, 0, 0, 0, 7, 101, 120, 97, 109, 112, 108, 101,
                  110>>
              ) == %Delete{
-               relation_id: 24576,
+               relation_id: 24_576,
                changed_key_tuple_data: {"example", nil}
              }
     end
@@ -219,7 +219,7 @@ defmodule WalEx.DecoderTest do
                <<68, 0, 0, 96, 0, 79, 0, 2, 116, 0, 0, 0, 3, 98, 97, 122, 116, 0, 0, 0, 3, 53, 54,
                  48>>
              ) == %Delete{
-               relation_id: 24576,
+               relation_id: 24_576,
                old_tuple_data: {"baz", "560"}
              }
     end

@@ -5,6 +5,8 @@ defmodule WalEx.Casting.Types do
   Implementation inspired by Cainophile, Supabase Realtime and Sequin
   """
 
+  alias WalEx.Casting.ArrayParser
+
   @doc """
   Casts a PostgreSQL string value to its appropriate Elixir type.
 
@@ -189,7 +191,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - integer arrays with support for multidimensional arrays
   def cast_record(array_string, <<"_int", _::binary>>) when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         cast_array_elements(elements, &String.to_integer/1)
 
@@ -200,7 +202,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - float arrays
   def cast_record(array_string, <<"_float", _::binary>>) when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         cast_array_elements(elements, &String.to_float/1)
 
@@ -212,7 +214,7 @@ defmodule WalEx.Casting.Types do
   # Array type casting - text/varchar arrays
   def cast_record(array_string, column_type)
       when is_binary(array_string) and column_type in ["_text", "_varchar"] do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} -> elements
       {:error, _} -> array_string
     end
@@ -220,7 +222,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - boolean arrays
   def cast_record(array_string, "_bool") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         Enum.map(elements, fn
           nil -> nil
@@ -236,7 +238,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - numeric/decimal arrays
   def cast_record(array_string, "_numeric") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         Enum.map(elements, fn
           nil -> nil
@@ -252,7 +254,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - timestamptz arrays
   def cast_record(array_string, "_timestamptz") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         Enum.map(elements, fn
           nil ->
@@ -272,7 +274,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - timestamp arrays
   def cast_record(array_string, "_timestamp") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         Enum.map(elements, fn
           nil ->
@@ -295,7 +297,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - UUID arrays
   def cast_record(array_string, "_uuid") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} -> elements
       {:error, _} -> array_string
     end
@@ -303,7 +305,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - JSONB arrays
   def cast_record(array_string, "_jsonb") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         Enum.map(elements, fn
           nil ->
@@ -325,7 +327,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - date arrays
   def cast_record(array_string, "_date") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         Enum.map(elements, fn
           nil ->
@@ -345,7 +347,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - time arrays
   def cast_record(array_string, "_time") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         Enum.map(elements, fn
           nil ->
@@ -365,21 +367,21 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - network address arrays (inet, cidr, macaddr)
   def cast_record(array_string, "_inet") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} -> elements
       {:error, _} -> array_string
     end
   end
 
   def cast_record(array_string, "_cidr") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} -> elements
       {:error, _} -> array_string
     end
   end
 
   def cast_record(array_string, "_macaddr") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} -> elements
       {:error, _} -> array_string
     end
@@ -387,7 +389,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - money arrays
   def cast_record(array_string, "_money") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         Enum.map(elements, fn
           nil ->
@@ -406,7 +408,7 @@ defmodule WalEx.Casting.Types do
 
   # Array type casting - bytea arrays
   def cast_record(array_string, "_bytea") when is_binary(array_string) do
-    case WalEx.Casting.ArrayParser.parse(array_string) do
+    case ArrayParser.parse(array_string) do
       {:ok, elements} ->
         Enum.map(elements, fn
           nil ->

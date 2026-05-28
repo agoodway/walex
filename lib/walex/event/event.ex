@@ -1,6 +1,13 @@
 defmodule WalEx.Event do
   @moduledoc """
-  Event DSL and casting
+  User-facing change event struct.
+
+  Each replicated row change is cast into a `%WalEx.Event{}` containing the
+  table (`name`), kind (`type`: `:insert | :update | :delete`), record(s),
+  changed fields (for updates), commit timestamp, LSN, and source metadata.
+
+  Host modules `use WalEx.Event, name: MyApp` to gain the `on_insert/4`,
+  `on_update/4`, `on_delete/4`, and `on_event/2` macros from `WalEx.Event.Dsl`.
   """
   @derive Jason.Encoder
   defstruct([:name, :type, :source, :new_record, :old_record, :changes, :timestamp, :lsn])
@@ -22,7 +29,9 @@ defmodule WalEx.Event do
   alias WalEx.{Changes, Config, Event, Helpers}
 
   @doc """
-  Macros for processing events
+  Installs the `WalEx.Event.Dsl` macros (`on_insert/4`, `on_update/4`,
+  `on_delete/4`, `on_event/2`) and `filter_events/1,4` helpers into the
+  calling module, bound to the given `:name` (WalEx app instance).
   """
   defmacro __using__(opts) do
     app_name = Keyword.get(opts, :name)
@@ -40,6 +49,11 @@ defmodule WalEx.Event do
     end
   end
 
+  @doc """
+  Casts a `WalEx.Changes.{NewRecord,UpdatedRecord,DeletedRecord}` into an
+  `Event` struct, attaching source metadata for `app_name`. Returns `nil` for
+  unrecognised inputs.
+  """
   def cast(
         %Changes.NewRecord{
           type: "INSERT",
@@ -121,6 +135,7 @@ defmodule WalEx.Event do
     }
   end
 
+  @doc "Casts every change in a list (typically `txn.changes`) to an `Event` for `app_name`."
   def cast_events(changes, app_name) do
     changes
     |> Enum.map(&cast(&1, app_name))

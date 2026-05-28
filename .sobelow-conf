@@ -1,0 +1,12 @@
+# Sobelow configuration.
+# Config.HTTPS is ignored because walex is a library, not a Phoenix endpoint.
+[
+  exit: "High",
+  ignore: ["Config.HTTPS"],
+  ignore_files: [],
+  format: "txt",
+  router: nil,
+  skip: false,
+  threshold: :low,
+  verbose: false
+]

@@ -14,6 +14,11 @@ defmodule Mix.Tasks.Walex.Setup do
   ]
 
   @shortdoc "Set up test database and tables"
+  @doc """
+  Creates the `todos_test` database, installs extensions, builds the `user`
+  and `todo` tables with seed data, and configures logical replication
+  (publication `events`, `REPLICA IDENTITY FULL`).
+  """
   def run(_) do
     Mix.Task.run("app.start")
     setup_test_database()

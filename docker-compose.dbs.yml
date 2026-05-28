@@ -1,6 +1,6 @@
 services:
   db:
-    image: supabase/postgres:14.1.0
+    image: supabase/postgres:17.6.1.131
     container_name: walex-db
     ports:
       - "5432:5432"

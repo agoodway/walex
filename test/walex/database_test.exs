@@ -132,12 +132,10 @@ defmodule WalEx.DatabaseTest do
         assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
         database_pid = get_database_pid(supervisor_pid)
 
-        assert {:error,
-                %DBConnection.ConnectionError{
-                  message: "tcp recv: closed",
-                  severity: :error,
-                  reason: :closed
-                }} == terminate_database_connection(database_pid, @username)
+        assert {:error, error} = terminate_database_connection(database_pid, @username)
+
+        assert match?(%DBConnection.ConnectionError{reason: :closed}, error) or
+                 match?(%Postgrex.Error{postgres: %{code: :admin_shutdown}}, error)
 
         assert_update_user(database_pid)
 

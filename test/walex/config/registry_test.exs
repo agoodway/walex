@@ -4,9 +4,9 @@ defmodule WalEx.Config.RegistryTest do
 
   require Logger
 
-  alias WalEx.Supervisor, as: WalExSupervisor
   alias WalEx.Config.Registry, as: WalExRegistry
   alias WalEx.Config.RegistryTest, as: WalExRegistryTest
+  alias WalEx.Supervisor, as: WalExSupervisor
 
   @base_configs [
     name: :test_name,

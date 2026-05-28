@@ -1,11 +1,16 @@
 defmodule WalEx.Config do
   @moduledoc """
-  Configuration
+  Per-app configuration store backed by `Agent`.
+
+  Each WalEx instance is identified by `:name` and keeps its config (database
+  credentials, publication, subscriptions, modules, slot settings, etc.) under
+  a registered agent so it can be read by replication processes and updated at
+  runtime via `add_config/3`, `remove_config/3`, and `replace_config/3`.
   """
   use Agent
 
-  alias WalEx.Replication.Publisher
   alias WalEx.Config.Registry, as: WalExRegistry
+  alias WalEx.Replication.Publisher
 
   @allowed_config_value ~w(database hostname name password port publication username webhook_signing_secret slot_name durable_slot message_middleware)a
   @allowed_config_values ~w(modules subscriptions)a
@@ -27,6 +32,10 @@ defmodule WalEx.Config do
           | {:subscriptions, [binary()]}
         ]
 
+  @doc """
+  Starts the per-app config agent. Expects `opts[:configs]` to contain a keyword
+  list of user configuration; the agent is registered under the app name.
+  """
   @spec start_link(opts :: start_opts()) :: Agent.on_start()
   def start_link(opts) do
     configs =
@@ -41,12 +50,20 @@ defmodule WalEx.Config do
     Agent.start_link(fn -> configs end, name: name)
   end
 
+  @doc "Returns `true` if `configs` is a keyword list with a non-nil entry for `key`."
   def has_config?(configs, key) when is_list(configs) do
     Keyword.has_key?(configs, key) and not is_nil(Keyword.get(configs, key))
   end
 
   def has_config?(_configs, _key), do: false
 
+  @doc """
+  Reads stored config for an app.
+
+  With one argument returns the full keyword list. With a `key` atom returns
+  that single value. With a list of keys returns a keyword list of those
+  entries in the requested order.
+  """
   def get_configs(app_name) do
     WalExRegistry.get_state(:get_agent, __MODULE__, app_name)
   end
@@ -64,10 +81,16 @@ defmodule WalEx.Config do
     |> Enum.sort_by(fn {k, _} -> Map.get(order_map, k) end)
   end
 
+  @doc "Shortcut for `get_configs(app_name, :database)`."
   def get_database(app_name), do: get_configs(app_name, :database)
 
+  @doc "Shortcut for `get_configs(app_name, :modules)`."
   def get_event_modules(app_name), do: get_configs(app_name, :modules)
 
+  @doc """
+  Appends one or more values to a multi-valued config key
+  (`:modules` or `:subscriptions`). Duplicates are removed.
+  """
   def add_config(app_name, key, new_values)
       when is_list(new_values) and key in @allowed_config_values do
     Agent.update(set_agent(app_name), fn config ->
@@ -85,6 +108,10 @@ defmodule WalEx.Config do
     add_config(app_name, key, [new_value])
   end
 
+  @doc """
+  Removes a value from a multi-valued config key
+  (`:modules` or `:subscriptions`).
+  """
   def remove_config(app_name, key, new_value) when key in @allowed_config_values do
     Agent.update(set_agent(app_name), fn config ->
       updated_values =
@@ -97,6 +124,10 @@ defmodule WalEx.Config do
     end)
   end
 
+  @doc """
+  Replaces a single-valued config key
+  (e.g. `:password`, `:hostname`, `:publication`).
+  """
   def replace_config(app_name, key, new_value) when key in @allowed_config_value do
     Agent.update(set_agent(app_name), fn config ->
       Keyword.put(config, key, new_value)
@@ -135,6 +166,11 @@ defmodule WalEx.Config do
     ]
   end
 
+  @doc """
+  Resolves the event-handler modules for an app: combines explicit `:modules`
+  with the convention-derived modules for each subscription, deduplicates, and
+  keeps only those that actually compile.
+  """
   def build_module_names(name, modules, subscriptions)
       when is_list(modules) and is_list(subscriptions) do
     subscriptions
@@ -147,6 +183,7 @@ defmodule WalEx.Config do
 
   def build_module_names(_name, _modules, _subscriptions), do: nil
 
+  @doc "Maps each subscription name to its conventional `<App>.Events.<Subscription>` module atom."
   def map_subscriptions_to_modules(subscriptions, name) do
     Enum.map(subscriptions, fn subscription ->
       (to_module_name(name) <> "." <> "Events" <> "." <> to_module_name(subscription))
@@ -154,6 +191,7 @@ defmodule WalEx.Config do
     end)
   end
 
+  @doc "Converts `snake_case` (or already-cased) names into `CamelCase` module-name fragments."
   def to_module_name(module_name) when is_atom(module_name) or is_binary(module_name) do
     module_name
     |> to_string()
@@ -253,5 +291,5 @@ defmodule WalEx.Config do
     Keyword.put(keyword, :hostname, hostname)
   end
 
-  defp set_agent(app_name), do: WalEx.Config.Registry.set_name(:set_agent, __MODULE__, app_name)
+  defp set_agent(app_name), do: WalExRegistry.set_name(:set_agent, __MODULE__, app_name)
 end

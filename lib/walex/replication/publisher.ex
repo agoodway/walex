@@ -1,23 +1,34 @@
 defmodule WalEx.Replication.Publisher do
   @moduledoc """
-  Publishes messages from Replication to Events
+  GenServer that accumulates decoded `pgoutput` messages into transactions and
+  hands the resulting `WalEx.Changes.Transaction` off to `WalEx.Events`.
+
+  Tracks the relation and type tables built up from `Relation` and `Type`
+  messages so that subsequent `Insert`/`Update`/`Delete` messages can be
+  hydrated into typed change records.
   """
   use GenServer
 
+  alias WalEx.Casting.Types
   alias WalEx.{Changes, Config, Events}
   alias WalEx.Decoder.Messages
 
-  defmodule(State,
-    do:
-      defstruct(
-        relations: %{},
-        transaction: nil,
-        types: %{}
-      )
-  )
+  defmodule State do
+    @moduledoc "Publisher state: open transaction plus accumulated relation and type tables."
+    defstruct relations: %{}, transaction: nil, types: %{}
+
+    @type t :: %__MODULE__{
+            relations: %{optional(non_neg_integer()) => struct()},
+            transaction: WalEx.Changes.Transaction.t() | nil,
+            types: %{optional(non_neg_integer()) => struct()}
+          }
+  end
 
   defstruct [:relations]
 
+  @type t :: %__MODULE__{relations: map() | nil}
+
+  @doc "Starts the publisher GenServer registered under the app name."
   def start_link(opts) do
     name =
       opts
@@ -27,11 +38,13 @@ defmodule WalEx.Replication.Publisher do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
+  @doc "Casts a decoded replication message into the publisher (fire-and-forget)."
   def process_message_async(message, app_name) do
     name = registry_name(app_name)
     GenServer.cast(name, %{message: message, app_name: app_name})
   end
 
+  @doc "Synchronously processes a decoded replication message; used by tests and synchronous middleware."
   def process_message_sync(message, app_name) do
     name = registry_name(app_name)
     GenServer.call(name, %{message: message, app_name: app_name}, :infinity)
@@ -56,7 +69,7 @@ defmodule WalEx.Replication.Publisher do
 
   defp process_message(
          %{message: %Messages.Begin{final_lsn: final_lsn, commit_timestamp: commit_timestamp}},
-         %State{} = state
+         state = %State{}
        ) do
     %State{
       state
@@ -265,7 +278,7 @@ defmodule WalEx.Replication.Publisher do
   defp validate_tuple_and_handle_response(tuple_data, index, acc, column_name, column_type) do
     case validate_tuple(tuple_data, index) do
       {:ok, record} ->
-        {:cont, Map.put(acc, column_name, WalEx.Casting.Types.cast_record(record, column_type))}
+        {:cont, Map.put(acc, column_name, Types.cast_record(record, column_type))}
 
       :error ->
         {:halt, acc}

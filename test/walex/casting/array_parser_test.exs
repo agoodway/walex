@@ -43,7 +43,7 @@ defmodule WalEx.Casting.ArrayParserTest do
     end
 
     test "parses arrays with whitespace" do
-      assert ArrayParser.parse("{ \"a\", \"b\" , \"c\" }") ==
+      assert ArrayParser.parse(~s({ "a", "b" , "c" })) ==
                {:ok, [" \"a\"", " \"b\" ", " \"c\" "]}
     end
 

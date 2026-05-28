@@ -1,11 +1,15 @@
 defmodule WalEx.Events.Supervisor do
-  @moduledoc false
+  @moduledoc """
+  Supervises the per-app event GenServers (`WalEx.Events` and, when configured,
+  `WalEx.Events.EventModules`). The latter is only started when the app's
+  `:modules` config is non-empty.
+  """
 
   use Supervisor
 
   alias WalEx.Config
   alias WalEx.Events
-  alias Events.EventModules
+  alias WalEx.Events.EventModules
 
   def start_link(opts) do
     app_name = Keyword.get(opts, :name)

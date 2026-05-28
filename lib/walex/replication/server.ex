@@ -7,6 +7,7 @@ defmodule WalEx.Replication.Server do
   """
   use Postgrex.ReplicationConnection
 
+  alias WalEx.Config
   alias WalEx.Config.Registry, as: WalExRegistry
   alias WalEx.Decoder
   alias WalEx.Replication.QueryBuilder
@@ -33,7 +34,7 @@ defmodule WalEx.Replication.Server do
       durable_slot: durable_slot,
       message_middleware: message_middleware
     ] =
-      WalEx.Config.get_configs(app_name, [
+      Config.get_configs(app_name, [
         :slot_name,
         :publication,
         :durable_slot,
@@ -72,7 +73,7 @@ defmodule WalEx.Replication.Server do
   end
 
   @impl true
-  def handle_result(results, %{step: :publication_exists} = state) do
+  def handle_result(results, state = %{step: :publication_exists}) do
     case results do
       [%Postgrex.Result{num_rows: 0}] ->
         raise "Publication doesn't exist. publication: #{inspect(state.publication)}"
@@ -120,7 +121,7 @@ defmodule WalEx.Replication.Server do
   end
 
   @impl true
-  def handle_result(%Postgrex.Error{} = error, %{step: :create_slot}) do
+  def handle_result(error = %Postgrex.Error{}, %{step: :create_slot}) do
     # if durable slot, can happen if multiple instances try to create the same slot
     raise "Failed to create replication slot, #{inspect(error)}"
   end
@@ -180,7 +181,7 @@ defmodule WalEx.Replication.Server do
     ]
 
     extra_opts = [auto_reconnect: true]
-    database_configs = WalEx.Config.get_configs(app_name, database_configs_keys)
+    database_configs = Config.get_configs(app_name, database_configs_keys)
 
     replications_name = [
       name: WalExRegistry.set_name(:set_gen_server, __MODULE__, app_name)
@@ -205,7 +206,7 @@ defmodule WalEx.Replication.Server do
     {:noreply, state}
   end
 
-  defp schedule_slot_check() do
+  defp schedule_slot_check do
     # Check again after 5 seconds
     Process.send_after(self(), :check_slot_status, 5000)
   end

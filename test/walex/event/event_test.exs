@@ -5,9 +5,9 @@ defmodule WalEx.EventTest do
 
   alias WalEx.Events.EventModules, as: EventsEventModules
   alias WalEx.Events.Supervisor, as: EventsSupervisor
-  alias WalEx.Supervisor, as: WalExSupervisor
-  alias WalEx.Replication.Supervisor, as: ReplicationSupervisor
   alias WalEx.Replication.Publisher, as: ReplicationPublisher
+  alias WalEx.Replication.Supervisor, as: ReplicationSupervisor
+  alias WalEx.Supervisor, as: WalExSupervisor
 
   @app_name :test_app
   @hostname System.get_env("PGHOST", "localhost")
