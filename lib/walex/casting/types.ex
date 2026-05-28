@@ -5,6 +5,11 @@ defmodule WalEx.Casting.Types do
   Implementation inspired by Cainophile, Supabase Realtime and Sequin
   """
 
+  # Postgres numeric has arbitrary precision; Decimal 3.x defaults to
+  # decimal128 limits (34 digits) and rejects larger values, so keep parsing
+  # unbounded to faithfully represent whatever Postgres sends.
+  @decimal_opts [max_digits: :infinity, max_exponent: :infinity]
+
   @doc """
   Casts a PostgreSQL string value to its appropriate Elixir type.
 
@@ -65,7 +70,9 @@ defmodule WalEx.Casting.Types do
     end
   end
 
-  def cast_record(record, "numeric") when is_binary(record), do: Decimal.new(record)
+  def cast_record(record, "numeric") when is_binary(record),
+    do: Decimal.new(record, @decimal_opts)
+
   def cast_record(record, "decimal"), do: cast_record(record, "numeric")
 
   def cast_record(record, "timestamp") when is_binary(record) do
@@ -129,7 +136,7 @@ defmodule WalEx.Casting.Types do
     # Remove currency symbol and convert to decimal
     record
     |> String.replace(~r/[^\d.-]/, "")
-    |> Decimal.new()
+    |> Decimal.new(@decimal_opts)
   end
 
   def cast_record(record, "bytea") when is_binary(record) do
@@ -240,7 +247,7 @@ defmodule WalEx.Casting.Types do
       {:ok, elements} ->
         Enum.map(elements, fn
           nil -> nil
-          elem -> Decimal.new(elem)
+          elem -> Decimal.new(elem, @decimal_opts)
         end)
 
       {:error, _} ->
@@ -396,7 +403,7 @@ defmodule WalEx.Casting.Types do
           elem ->
             elem
             |> String.replace(~r/[^\d.-]/, "")
-            |> Decimal.new()
+            |> Decimal.new(@decimal_opts)
         end)
 
       {:error, _} ->
