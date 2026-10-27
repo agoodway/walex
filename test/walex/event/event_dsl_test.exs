@@ -5,7 +5,6 @@ defmodule WalEx.EventDslTest do
 
   alias WalEx.Events.EventModules, as: EventsEventModules
   alias WalEx.Events.Supervisor, as: EventsSupervisor
-  alias WalEx.Supervisor, as: WalExSupervisor
 
   @app_name :test_app
   @hostname System.get_env("PGHOST", "localhost")
@@ -31,7 +30,7 @@ defmodule WalEx.EventDslTest do
       {{:ok, database_pid}, _log} = with_log(fn -> start_database(@dsl_base_configs) end)
 
       {{:ok, supervisor_pid}, _log} =
-        with_log(fn -> WalExSupervisor.start_link(@dsl_base_configs) end)
+        with_log(fn -> start_walex_supervised(@dsl_base_configs) end)
 
       %{database_pid: database_pid, supervisor_pid: supervisor_pid}
     end
@@ -66,7 +65,7 @@ defmodule WalEx.EventDslTest do
       {{:ok, database_pid}, _log} = with_log(fn -> start_database(@dsl_base_configs) end)
 
       {{:ok, supervisor_pid}, _log} =
-        with_log(fn -> WalExSupervisor.start_link(@dsl_base_configs) end)
+        with_log(fn -> start_walex_supervised(@dsl_base_configs) end)
 
       %{database_pid: database_pid, supervisor_pid: supervisor_pid}
     end
