@@ -7,7 +7,6 @@ defmodule WalEx.EventTest do
   alias WalEx.Events.Supervisor, as: EventsSupervisor
   alias WalEx.Replication.Publisher, as: ReplicationPublisher
   alias WalEx.Replication.Supervisor, as: ReplicationSupervisor
-  alias WalEx.Supervisor, as: WalExSupervisor
 
   @app_name :test_app
   @hostname System.get_env("PGHOST", "localhost")
@@ -33,7 +32,7 @@ defmodule WalEx.EventTest do
       {{:ok, database_pid}, _log} = with_log(fn -> start_database(@base_configs) end)
 
       {{:ok, supervisor_pid}, _log} =
-        with_log(fn -> WalExSupervisor.start_link(@base_configs) end)
+        with_log(fn -> start_walex_supervised(@base_configs) end)
 
       %{database_pid: database_pid, supervisor_pid: supervisor_pid}
     end

@@ -345,6 +345,24 @@ in case the slot is already used `WalEx.Supervisor` will fail to start with a `R
 
 Be warned that there are many additional potential gotchas (a detailed guide is planned).
 
+##### Connection lifecycle (`on_connect` and telemetry)
+
+Postgres redelivers a slot's unacknowledged transactions whenever the connection comes back, and a reconnect can follow a failover, restore or major upgrade of the database. Code that caches anything about the stream should be told. Define `on_connect` in a module that uses `WalEx.Event`:
+
+```elixir
+defmodule MyApp.Events do
+  use WalEx.Event, name: MyApp
+
+  on_connect(fn %{app_name: _app, slot_name: _slot, reconnect?: reconnect?} ->
+    MyApp.Cache.reset(reconnect?)
+  end)
+end
+```
+
+The block runs on every connection, including the first (`reconnect?: false`), before replication starts. It runs in `WalEx.Events.EventModules`, not in the connection process, so it cannot delay replication, and an error raised in it is logged and ignored.
+
+The same moments are published as telemetry events, with the app and slot name as metadata, for monitoring: `[:walex, :replication, :connected]` (also carrying `reconnect?`) and `[:walex, :replication, :disconnected]`.
+
 ##### Event middleware / Back-pressure
 
 WalEx receives events from Postgres in `WalEx.Replication.Server` and then `cast` those to `WalEx.Replication.Publisher`.

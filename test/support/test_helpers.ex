@@ -26,6 +26,15 @@ defmodule WalEx.Support.TestHelpers do
     find_child_pid(supervisor_pid, DBConnection.ConnectionPool)
   end
 
+  def start_walex_supervised(configs, supervisor \\ WalEx.Supervisor) do
+    ExUnit.Callbacks.start_supervised(%{
+      id: make_ref(),
+      start: {supervisor, :start_link, [configs]},
+      type: :supervisor,
+      restart: :temporary
+    })
+  end
+
   def start_database(configs) do
     case Postgrex.start_link(configs) do
       {:ok, conn} ->
@@ -70,16 +79,37 @@ defmodule WalEx.Support.TestHelpers do
 
   def pg_replication_slots(database_pid) do
     pg_replication_slots_query =
-      "SELECT slot_name, slot_type, active, temporary FROM \"pg_replication_slots\";"
+      "SELECT slot_name, slot_type, active, temporary FROM \"pg_replication_slots\" WHERE database = current_database();"
 
     query(database_pid, pg_replication_slots_query)
   end
 
-  def pg_drop_slots(database_pid) do
-    pg_drop_slots_query =
-      "SELECT pg_drop_replication_slot(slot_name) FROM \"pg_replication_slots\";"
+  def pg_drop_slots(database_pid, attempts \\ 100) do
+    terminate_slot_backends = """
+    SELECT pg_terminate_backend(active_pid)
+    FROM pg_replication_slots
+    WHERE database = current_database() AND active_pid IS NOT NULL;
+    """
 
-    query(database_pid, pg_drop_slots_query)
+    drop_slots = """
+    SELECT pg_drop_replication_slot(slot_name)
+    FROM pg_replication_slots
+    WHERE database = current_database() AND NOT active;
+    """
+
+    query(database_pid, terminate_slot_backends)
+    result = query(database_pid, drop_slots)
+
+    if attempts > 0 and
+         query(
+           database_pid,
+           "SELECT 1 FROM pg_replication_slots WHERE database = current_database();"
+         ) != [] do
+      :timer.sleep(50)
+      pg_drop_slots(database_pid, attempts - 1)
+    else
+      result
+    end
   end
 
   def update_user(database_pid) do

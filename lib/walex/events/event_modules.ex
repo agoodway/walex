@@ -4,6 +4,8 @@ defmodule WalEx.Events.EventModules do
   """
   use GenServer
 
+  require Logger
+
   alias WalEx.Config.Registry
 
   def start_link(opts) do
@@ -13,6 +15,16 @@ defmodule WalEx.Events.EventModules do
       |> registry_name
 
     GenServer.start_link(__MODULE__, opts, name: name)
+  end
+
+  @doc """
+  Runs the `on_connect/1` hook of every configured module, asynchronously.
+
+  Called by the replication connection each time it connects. Returns `:ok`
+  immediately, also when this process is not running.
+  """
+  def connected(app_name, info) do
+    GenServer.cast(registry_name(app_name), {:connected, info})
   end
 
   def process(txn, app_name) do
@@ -38,6 +50,28 @@ defmodule WalEx.Events.EventModules do
     |> process_events(txn)
 
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_cast({:connected, %{app_name: app_name} = info}, state) do
+    app_name
+    |> WalEx.Config.get_configs(:modules)
+    |> List.wrap()
+    |> Enum.each(&run_connect_hook(&1, info))
+
+    {:noreply, state}
+  end
+
+  defp run_connect_hook(module, info) do
+    if Keyword.has_key?(module.__info__(:functions), :process_connect) do
+      module.process_connect(info)
+    end
+  rescue
+    error ->
+      Logger.error("on_connect in #{inspect(module)} failed: #{Exception.message(error)}")
+  catch
+    kind, reason ->
+      Logger.error("on_connect in #{inspect(module)} failed: #{inspect({kind, reason})}")
   end
 
   defp process_events(nil, %{changes: [], commit_timestamp: _}), do: nil

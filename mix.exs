@@ -38,6 +38,7 @@ defmodule WalEx.MixProject do
       {:postgrex, ">= 0.20.0"},
       {:decimal, "~> 3.1"},
       {:jason, "~> 1.4"},
+      {:telemetry, "~> 1.0"},
 
       # Dev & Test
       {:ex_doc, "~> 0.40.3", only: :dev, runtime: false},

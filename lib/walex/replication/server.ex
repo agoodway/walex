@@ -10,6 +10,7 @@ defmodule WalEx.Replication.Server do
   alias WalEx.Config
   alias WalEx.Config.Registry, as: WalExRegistry
   alias WalEx.Decoder
+  alias WalEx.Events.EventModules
   alias WalEx.Replication.QueryBuilder
 
   require Logger
@@ -47,7 +48,8 @@ defmodule WalEx.Replication.Server do
       slot_name: slot_name,
       publication: publication,
       durable_slot: durable_slot,
-      message_middleware: message_middleware
+      message_middleware: message_middleware,
+      connects: 0
     }
 
     Process.flag(:message_queue_data, :off_heap)
@@ -57,8 +59,27 @@ defmodule WalEx.Replication.Server do
 
   @impl true
   def handle_connect(state) do
+    info = %{
+      app_name: state.app_name,
+      slot_name: state.slot_name,
+      reconnect?: state.connects > 0
+    }
+
+    :telemetry.execute([:walex, :replication, :connected], %{}, info)
+    EventModules.connected(state.app_name, info)
+
     query = QueryBuilder.publication_exists(state)
-    {:query, query, %{state | step: :publication_exists}}
+    {:query, query, %{state | step: :publication_exists, connects: state.connects + 1}}
+  end
+
+  @impl true
+  def handle_disconnect(state) do
+    :telemetry.execute([:walex, :replication, :disconnected], %{}, %{
+      app_name: state.app_name,
+      slot_name: state.slot_name
+    })
+
+    {:noreply, %{state | step: :disconnected}}
   end
 
   @impl true
