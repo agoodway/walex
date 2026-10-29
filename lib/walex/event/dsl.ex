@@ -47,6 +47,31 @@ defmodule WalEx.Event.Dsl do
   end
 
   @doc """
+  Defines `process_connect/1` on the caller module, run whenever the
+  replication connection is (re)established.
+
+  The block receives `%{app_name: atom, slot_name: String.t(), reconnect?: boolean}`.
+  It runs before replication restarts, so it is the place to reset anything that
+  assumes an uninterrupted stream: Postgres redelivers every transaction after
+  the slot's last acknowledged position, and a reconnect can follow a restore or
+  upgrade of the database. `reconnect?` is `false` for the first connection.
+
+  The block runs in `WalEx.Events.EventModules`, not in the connection process, so
+  it cannot delay replication. A raised error is logged and otherwise ignored.
+
+      on_connect(fn %{reconnect?: reconnect?} ->
+        MyApp.Cache.invalidate(reconnect?)
+      end)
+  """
+  defmacro on_connect(do_block) do
+    quote do
+      def process_connect(info) do
+        unquote(do_block).(info)
+      end
+    end
+  end
+
+  @doc """
   Defines `process_all/1` on the caller module.
 
   With `:all`, the block receives every event in the transaction. With a table

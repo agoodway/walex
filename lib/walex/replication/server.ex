@@ -10,6 +10,7 @@ defmodule WalEx.Replication.Server do
   alias WalEx.Config
   alias WalEx.Config.Registry, as: WalExRegistry
   alias WalEx.Decoder
+  alias WalEx.Events.EventModules
   alias WalEx.Replication.QueryBuilder
 
   require Logger
@@ -47,7 +48,11 @@ defmodule WalEx.Replication.Server do
       slot_name: slot_name,
       publication: publication,
       durable_slot: durable_slot,
-      message_middleware: message_middleware
+      message_middleware: message_middleware,
+      streaming?: false,
+      connects: 0,
+      last_wal_end: 0,
+      standby_timer: nil
     }
 
     Process.flag(:message_queue_data, :off_heap)
@@ -57,8 +62,29 @@ defmodule WalEx.Replication.Server do
 
   @impl true
   def handle_connect(state) do
+    info = %{
+      app_name: state.app_name,
+      slot_name: state.slot_name,
+      reconnect?: state.connects > 0
+    }
+
+    :telemetry.execute([:walex, :replication, :connected], %{}, info)
+    EventModules.connected(state.app_name, info)
+
     query = QueryBuilder.publication_exists(state)
-    {:query, query, %{state | step: :publication_exists}}
+
+    {:query, query,
+     %{reset_stream(state) | step: :publication_exists, connects: state.connects + 1}}
+  end
+
+  @impl true
+  def handle_disconnect(state) do
+    :telemetry.execute([:walex, :replication, :disconnected], %{}, %{
+      app_name: state.app_name,
+      slot_name: state.slot_name
+    })
+
+    {:noreply, %{reset_stream(state) | step: :disconnected}}
   end
 
   @impl true
@@ -144,6 +170,8 @@ defmodule WalEx.Replication.Server do
 
   @impl true
   def handle_data(<<?w, _wal_start::64, _wal_end::64, _clock::64, rest::binary>>, state) do
+    state = mark_streaming(state)
+
     rest
     |> Decoder.decode_message()
     |> state.message_middleware.(state.app_name)
@@ -153,14 +181,29 @@ defmodule WalEx.Replication.Server do
 
   @impl true
   def handle_data(<<?k, wal_end::64, _clock::64, reply>>, state) do
+    state = mark_streaming(state)
+    state = %{state | last_wal_end: max(state.last_wal_end, wal_end)}
+
     messages =
       case reply do
-        1 -> [<<?r, wal_end + 1::64, wal_end + 1::64, wal_end + 1::64, current_time()::64, 0>>]
+        1 -> status_update(state)
         0 -> []
       end
 
     {:noreply, messages, state}
   end
+
+  # Periodic standby status update. Postgres only asks for one when
+  # `wal_sender_timeout` is greater than 0 (with 0 it never asks), so without
+  # this the slot's confirmed_flush_lsn can stay pinned on a quiet publication
+  # while the database retains WAL. Enabled with `standby_status_interval`.
+  @impl true
+  def handle_info(:standby_status, %{streaming?: true} = state) do
+    state = schedule_standby_status(%{state | standby_timer: nil})
+    {:noreply, status_update(state), state}
+  end
+
+  def handle_info(:standby_status, state), do: {:noreply, %{state | standby_timer: nil}}
 
   @impl true
   def handle_info(:check_slot_status, state) do
@@ -205,6 +248,41 @@ defmodule WalEx.Replication.Server do
 
     {:noreply, state}
   end
+
+  # The status update to send, as a (possibly empty) list of replies.
+  defp status_update(state) do
+    case ack_position(state) do
+      nil -> []
+      lsn -> [<<?r, lsn::64, lsn::64, lsn::64, current_time()::64, 0>>]
+    end
+  end
+
+  # The LSN we can safely report as flushed, or nil if there is nothing to say.
+  defp ack_position(%{last_wal_end: 0}), do: nil
+  defp ack_position(%{last_wal_end: wal_end}), do: wal_end + 1
+
+  # Postgrex calls handle_result/2 for queries only, never after a successful
+  # START_REPLICATION, so the first replication message is the signal that the
+  # stream is up. Status updates may only be sent from then on.
+  defp mark_streaming(%{streaming?: true} = state), do: state
+  defp mark_streaming(state), do: schedule_standby_status(%{state | streaming?: true})
+
+  defp reset_stream(state) do
+    if state.standby_timer, do: Process.cancel_timer(state.standby_timer)
+    %{state | streaming?: false, last_wal_end: 0, standby_timer: nil}
+  end
+
+  defp schedule_standby_status(%{standby_timer: nil, app_name: app_name} = state) do
+    case WalEx.Config.get_configs(app_name, :standby_status_interval) do
+      interval when is_integer(interval) and interval > 0 ->
+        %{state | standby_timer: Process.send_after(self(), :standby_status, interval)}
+
+      _ ->
+        state
+    end
+  end
+
+  defp schedule_standby_status(state), do: state
 
   defp schedule_slot_check do
     # Check again after 5 seconds

@@ -58,7 +58,7 @@ defmodule WalEx.DatabaseTest do
 
     test "should start replication slot", %{database_pid: database_pid} do
       capture_log(fn ->
-        assert {:ok, replication_pid} = WalExSupervisor.start_link(@base_configs)
+        assert {:ok, replication_pid} = start_walex_supervised(@base_configs)
         assert is_pid(replication_pid)
         assert [@replication_slot] = pg_replication_slots(database_pid)
       end)
@@ -70,7 +70,7 @@ defmodule WalEx.DatabaseTest do
       config = Keyword.put(@base_configs, :slot_name, slot_name)
 
       capture_log(fn ->
-        assert {:ok, replication_pid} = WalExSupervisor.start_link(config)
+        assert {:ok, replication_pid} = start_walex_supervised(config)
 
         assert is_pid(replication_pid)
         assert [slot] = pg_replication_slots(database_pid)
@@ -80,7 +80,7 @@ defmodule WalEx.DatabaseTest do
 
     test "should re-initiate after forcing database process termination" do
       capture_log(fn ->
-        assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
+        assert {:ok, supervisor_pid} = start_walex_supervised(@base_configs, TestSupervisor)
         database_pid = get_database_pid(supervisor_pid)
 
         assert is_pid(database_pid)
@@ -101,7 +101,7 @@ defmodule WalEx.DatabaseTest do
 
     test "should re-initiate after database connection restarted by supervisor" do
       capture_log(fn ->
-        assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
+        assert {:ok, supervisor_pid} = start_walex_supervised(@base_configs, TestSupervisor)
         database_pid = get_database_pid(supervisor_pid)
 
         Supervisor.terminate_child(supervisor_pid, DBConnection.ConnectionPool)
@@ -129,7 +129,7 @@ defmodule WalEx.DatabaseTest do
 
     test "should re-initiate after database connection terminated" do
       capture_log(fn ->
-        assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
+        assert {:ok, supervisor_pid} = start_walex_supervised(@base_configs, TestSupervisor)
         database_pid = get_database_pid(supervisor_pid)
 
         assert {:error, error} = terminate_database_connection(database_pid, @username)
@@ -145,7 +145,7 @@ defmodule WalEx.DatabaseTest do
 
     test "should re-initiate after database restart" do
       capture_log(fn ->
-        assert {:ok, supervisor_pid} = TestSupervisor.start_link(@base_configs)
+        assert {:ok, supervisor_pid} = start_walex_supervised(@base_configs, TestSupervisor)
         database_pid = get_database_pid(supervisor_pid)
 
         assert is_pid(database_pid)
@@ -425,7 +425,7 @@ defmodule WalEx.DatabaseTest do
   end
 
   defp pg_isready? do
-    case Rambo.run("pg_isready", ["-h", "localhost", "-p", "5432"]) do
+    case Rambo.run("pg_isready", ["-h", @hostname, "-p", Integer.to_string(@port)]) do
       {:ok, %Rambo{status: 0, out: "localhost:5432 - accepting connections\n", err: ""}} ->
         Logger.debug("PostgreSQL is running.")
         true

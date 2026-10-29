@@ -20,7 +20,7 @@ defmodule WalEx.SupervisorTest do
   describe "start_link/2" do
     test "should start Supervisor and child processes" do
       capture_log(fn ->
-        assert {:ok, walex_supervisor_pid} = WalExSupervisor.start_link(@base_configs)
+        assert {:ok, walex_supervisor_pid} = start_walex_supervised(@base_configs)
         assert is_pid(walex_supervisor_pid)
 
         assert %{active: 3, specs: 3, supervisors: 2, workers: 1} =
@@ -55,9 +55,9 @@ defmodule WalEx.SupervisorTest do
         configs_2 = Keyword.put(configs_1, :name, :other_name)
         configs_3 = Keyword.put(configs_1, :name, :another_name)
 
-        assert {:ok, pid_1} = WalExSupervisor.start_link(configs_1)
-        assert {:ok, pid_2} = WalExSupervisor.start_link(configs_2)
-        assert {:ok, pid_3} = WalExSupervisor.start_link(configs_3)
+        assert {:ok, pid_1} = start_walex_supervised(configs_1)
+        assert {:ok, pid_2} = start_walex_supervised(configs_2)
+        assert {:ok, pid_3} = start_walex_supervised(configs_3)
 
         assert is_pid(pid_1)
         assert is_pid(pid_2)
@@ -67,7 +67,7 @@ defmodule WalEx.SupervisorTest do
 
     test "should start WalEx.Registry" do
       capture_log(fn ->
-        assert {:ok, _pid} = WalExSupervisor.start_link(@base_configs)
+        assert {:ok, _pid} = start_walex_supervised(@base_configs)
         assert is_pid(Process.whereis(:walex_registry))
       end)
     end

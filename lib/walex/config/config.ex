@@ -12,7 +12,7 @@ defmodule WalEx.Config do
   alias WalEx.Config.Registry, as: WalExRegistry
   alias WalEx.Replication.Publisher
 
-  @allowed_config_value ~w(database hostname name password port publication username webhook_signing_secret slot_name durable_slot message_middleware)a
+  @allowed_config_value ~w(database hostname name password port publication username webhook_signing_secret slot_name durable_slot message_middleware standby_status_interval)a
   @allowed_config_values ~w(modules subscriptions)a
 
   @type start_opts :: [
@@ -26,6 +26,7 @@ defmodule WalEx.Config do
           | {:webhook_signing_secret, binary}
           | {:slot_name, binary}
           | {:durable_slot, boolean}
+          | {:standby_status_interval, pos_integer}
           | {:message_middleware, (term, term -> :ok)}
           | {:event_relay, keyword()}
           | {:modules, [module]}
@@ -162,6 +163,7 @@ defmodule WalEx.Config do
       event_relay: Keyword.get(configs, :event_relay),
       slot_name: Keyword.get(configs, :slot_name) |> parse_slot_name(name),
       durable_slot: Keyword.get(configs, :durable_slot, false) == true,
+      standby_status_interval: parse_standby_status_interval(configs),
       message_middleware: Keyword.get(configs, :message_middleware) |> parse_message_middleware()
     ]
   end
@@ -267,6 +269,19 @@ defmodule WalEx.Config do
     |> String.replace(~r/[^a-z0-9]+/, "_")
     |> String.replace(~r/_+/, "_")
     |> String.trim("_")
+  end
+
+  defp parse_standby_status_interval(configs) do
+    case Keyword.get(configs, :standby_status_interval) do
+      nil ->
+        nil
+
+      interval when is_integer(interval) and interval > 0 ->
+        interval
+
+      other ->
+        raise "standby_status_interval must be a positive integer (milliseconds), got: #{inspect(other)}"
+    end
   end
 
   defp parse_message_middleware(message_middleware) when is_function(message_middleware, 2),

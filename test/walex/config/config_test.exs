@@ -95,6 +95,7 @@ defmodule WalEx.ConfigTest do
                event_relay: nil,
                slot_name: "my_app_walex",
                durable_slot: false,
+               standby_status_interval: nil,
                message_middleware: &Publisher.process_message_async/2
              ] == Config.get_configs(@app_name)
     end
