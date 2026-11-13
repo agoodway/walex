@@ -226,4 +226,72 @@ defmodule WalEx.Replication.StandbyStatusTest do
                Server.handle_data(xlog(20, commit), %{st | in_txn: true})
     end
   end
+
+  describe "with ack_after_processing, confirmed commits ahead of the last keepalive" do
+    # Only keepalives update last_wal_end, and Postgres sends few of them while
+    # it is busy streaming. Handled commits must still move the slot forward.
+    setup do
+      app = :"sb_ahead_#{System.unique_integer([:positive])}"
+
+      start_config!(app,
+        durable_slot: true,
+        ack_after_processing: true,
+        standby_status_interval: 60_000
+      )
+
+      %{app: app}
+    end
+
+    test "a commit handled after the last keepalive is reported", %{app: app} do
+      message_middleware = fn _msg, _app -> :ok end
+      begin = <<?B, 200::64, 0::64, 1::32>>
+      commit = <<?C, 0::8, 200::64, 210::64, 0::64>>
+
+      {:noreply, [], st} =
+        Server.handle_data(keepalive(100, 0), state(app, message_middleware: message_middleware))
+
+      {:noreply, st} = Server.handle_data(xlog(0, begin), st)
+      {:noreply, st} = Server.handle_data(xlog(0, commit), st)
+
+      assert {:noreply, msgs, %{standby_timer: ref}} = tick(st)
+      assert ack_lsn(msgs) == 201
+      Process.cancel_timer(ref)
+    end
+
+    test "a confirmed commit is reported before any keepalive", %{app: app} do
+      assert {:noreply, msgs, %{standby_timer: ref}} = tick(state(app, confirmed_lsn: 201))
+
+      assert ack_lsn(msgs) == 201
+      Process.cancel_timer(ref)
+    end
+
+    test "the slot's position is reported before any keepalive", %{app: app} do
+      assert {:noreply, msgs, %{standby_timer: ref}} =
+               tick(state(app, slot_confirmed_lsn: 4_000))
+
+      assert ack_lsn(msgs) == 4_000
+      Process.cancel_timer(ref)
+    end
+
+    test "a later keepalive still wins when nothing is open", %{app: app} do
+      assert {:noreply, msgs, %{standby_timer: ref}} =
+               tick(state(app, last_wal_end: 5_000, confirmed_lsn: 201))
+
+      assert ack_lsn(msgs) == 5_001
+      Process.cancel_timer(ref)
+    end
+
+    test "an open transaction never reports the keepalive position", %{app: app} do
+      assert {:noreply, msgs, %{standby_timer: ref}} =
+               tick(state(app, last_wal_end: 5_000, in_txn: true, confirmed_lsn: 201))
+
+      assert ack_lsn(msgs) == 201
+      Process.cancel_timer(ref)
+    end
+
+    test "nothing is sent when no position is known", %{app: app} do
+      assert {:noreply, [], %{standby_timer: ref}} = tick(state(app))
+      Process.cancel_timer(ref)
+    end
+  end
 end

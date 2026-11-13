@@ -306,27 +306,32 @@ defmodule WalEx.Replication.Server do
   # before.
   #
   # With ack_after_processing, only positions whose transactions have been fully
-  # handed to the event handlers are acked. Dispatch is synchronous in that
-  # mode, so once the middleware returns for a COMMIT, that transaction is done,
-  # and track_transaction/2 records it as confirmed_lsn. When no transaction is
-  # open, the server's position (from a keepalive, which follows all data it
-  # covers) has been fully processed, so it is safe to advance to it. That is
-  # what lets a quiet publication advance the slot instead of staying pinned at
-  # the last commit. Inside a transaction, the last confirmed commit is
-  # reported, or, if there is none yet on this connection, the slot's own
-  # confirmed_flush_lsn read at connect: Postgres already holds that position,
-  # so reporting it is always safe.
-  defp ack_position(%{last_wal_end: 0}), do: nil
-
-  defp ack_position(%{ack_after_processing: true, in_txn: false, last_wal_end: wal_end}),
-    do: wal_end + 1
-
+  # handed to the event handlers are acked, and the highest such position is
+  # reported. Dispatch is synchronous in that mode, so once the middleware
+  # returns for a COMMIT, that transaction is done, and track_transaction/2
+  # records it as confirmed_lsn. The candidates are:
+  #
+  #   * confirmed_lsn, the last handled commit on this connection.
+  #   * slot_confirmed_lsn, the slot's own confirmed_flush_lsn read at connect.
+  #     Postgres already holds that position, so reporting it is always safe.
+  #   * The server's position from the last keepalive, + 1, but only when no
+  #     transaction is open. A keepalive follows all data it covers, so that
+  #     data has been processed. That is what lets a quiet publication advance
+  #     the slot instead of staying pinned at the last commit.
+  #
+  # Only keepalives update last_wal_end, and Postgres sends few of them while
+  # it is busy streaming, so confirmed_lsn can be well ahead of it. Taking the
+  # maximum keeps handled commits moving the slot forward either way.
   defp ack_position(state = %{ack_after_processing: true}) do
-    [state.confirmed_lsn, state.slot_confirmed_lsn]
+    idle_position =
+      if not state.in_txn and state.last_wal_end > 0, do: state.last_wal_end + 1
+
+    [state.confirmed_lsn, state.slot_confirmed_lsn, idle_position]
     |> Enum.reject(&is_nil/1)
     |> Enum.max(fn -> nil end)
   end
 
+  defp ack_position(%{last_wal_end: 0}), do: nil
   defp ack_position(%{last_wal_end: wal_end}), do: wal_end + 1
 
   # Postgrex calls handle_result/2 for queries only, never after a successful
