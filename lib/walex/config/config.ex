@@ -26,6 +26,8 @@ defmodule WalEx.Config do
           | {:webhook_signing_secret, binary}
           | {:slot_name, binary}
           | {:durable_slot, boolean}
+          | {:ack_after_processing, boolean}
+          | {:standby_status_interval, pos_integer}
           | {:message_middleware, (term, term -> :ok)}
           | {:event_relay, keyword()}
           | {:modules, [module]}
@@ -87,6 +89,20 @@ defmodule WalEx.Config do
   @doc "Shortcut for `get_configs(app_name, :modules)`."
   def get_event_modules(app_name), do: get_configs(app_name, :modules)
 
+  @doc false
+  # Records a replication connection for `app_name` and returns how many
+  # connections were recorded before this one. The count lives in this agent
+  # rather than in WalEx.Replication.Server because the replication processes
+  # are restarted together after a crash, and a restart must still be reported
+  # as a reconnect.
+  @spec record_connection(atom()) :: non_neg_integer()
+  def record_connection(app_name) do
+    Agent.get_and_update(set_agent(app_name), fn config ->
+      previous = Keyword.get(config, :connection_count, 0)
+      {previous, Keyword.put(config, :connection_count, previous + 1)}
+    end)
+  end
+
   @doc """
   Appends one or more values to a multi-valued config key
   (`:modules` or `:subscriptions`). Duplicates are removed.
@@ -127,11 +143,54 @@ defmodule WalEx.Config do
   @doc """
   Replaces a single-valued config key
   (e.g. `:password`, `:hostname`, `:publication`).
+
+  When `ack_after_processing` is enabled, `:durable_slot` and
+  `:message_middleware` can only be replaced with values that keep the
+  delivery guarantee: `durable_slot: true`, and the synchronous default
+  middleware. Anything else raises `ArgumentError` and leaves the config
+  unchanged.
   """
   def replace_config(app_name, key, new_value) when key in @allowed_config_value do
-    Agent.update(set_agent(app_name), fn config ->
-      Keyword.put(config, key, new_value)
-    end)
+    result =
+      Agent.get_and_update(set_agent(app_name), fn config ->
+        updated = Keyword.put(config, key, new_value)
+
+        case validate_ack_after_processing(updated) do
+          :ok -> {:ok, updated}
+          error -> {error, config}
+        end
+      end)
+
+    case result do
+      :ok -> :ok
+      {:error, message} -> raise ArgumentError, "cannot replace #{inspect(key)}: #{message}"
+    end
+  end
+
+  @doc false
+  # Checks a resolved config (as stored in the agent) for combinations that
+  # break the ack_after_processing guarantee. Used by replace_config/3 and by
+  # WalEx.Replication.Server on every start, because the agent outlives the
+  # replication processes.
+  @spec validate_ack_after_processing(keyword()) :: :ok | {:error, String.t()}
+  def validate_ack_after_processing(config) do
+    cond do
+      Keyword.get(config, :ack_after_processing) != true ->
+        :ok
+
+      Keyword.get(config, :durable_slot) != true ->
+        {:error,
+         "ack_after_processing requires durable_slot: true — temporary slots do not retain WAL on reconnect"}
+
+      Keyword.get(config, :message_middleware) != (&Publisher.process_message_sync/2) ->
+        {:error,
+         "ack_after_processing requires the default synchronous message_middleware " <>
+           "(&WalEx.Replication.Publisher.process_message_sync/2) — acknowledgements assume " <>
+           "WalEx dispatches each message synchronously"}
+
+      true ->
+        :ok
+    end
   end
 
   defp build_app_configs(configs) do
@@ -144,6 +203,7 @@ defmodule WalEx.Config do
     subscriptions = Keyword.get(configs, :subscriptions, [])
     modules = Keyword.get(configs, :modules, [])
     module_names = build_module_names(name, modules, subscriptions)
+    ack_after_processing = parse_ack_after_processing(configs)
 
     [
       name: name,
@@ -162,7 +222,11 @@ defmodule WalEx.Config do
       event_relay: Keyword.get(configs, :event_relay),
       slot_name: Keyword.get(configs, :slot_name) |> parse_slot_name(name),
       durable_slot: Keyword.get(configs, :durable_slot, false) == true,
-      message_middleware: Keyword.get(configs, :message_middleware) |> parse_message_middleware()
+      ack_after_processing: ack_after_processing,
+      standby_status_interval: parse_standby_status_interval(configs),
+      message_middleware:
+        Keyword.get(configs, :message_middleware)
+        |> parse_message_middleware(ack_after_processing)
     ]
   end
 
@@ -269,10 +333,43 @@ defmodule WalEx.Config do
     |> String.trim("_")
   end
 
-  defp parse_message_middleware(message_middleware) when is_function(message_middleware, 2),
-    do: message_middleware
+  defp parse_ack_after_processing(configs) do
+    durable_slot = Keyword.get(configs, :durable_slot, false) == true
+    ack_after_processing = Keyword.get(configs, :ack_after_processing, false) == true
+    custom_middleware = not is_nil(Keyword.get(configs, :message_middleware))
 
-  defp parse_message_middleware(nil), do: &Publisher.process_message_async/2
+    cond do
+      ack_after_processing and not durable_slot ->
+        raise "ack_after_processing requires durable_slot: true — temporary slots do not retain WAL on reconnect"
+
+      ack_after_processing and custom_middleware ->
+        raise "ack_after_processing cannot be combined with a custom message_middleware — " <>
+                "acknowledgements assume WalEx dispatches each message synchronously"
+
+      true ->
+        ack_after_processing
+    end
+  end
+
+  defp parse_standby_status_interval(configs) do
+    case Keyword.get(configs, :standby_status_interval) do
+      nil ->
+        nil
+
+      interval when is_integer(interval) and interval > 0 ->
+        interval
+
+      other ->
+        raise "standby_status_interval must be a positive integer (milliseconds), got: #{inspect(other)}"
+    end
+  end
+
+  defp parse_message_middleware(message_middleware, _ack_after_processing)
+       when is_function(message_middleware, 2),
+       do: message_middleware
+
+  defp parse_message_middleware(nil, true), do: &Publisher.process_message_sync/2
+  defp parse_message_middleware(nil, false), do: &Publisher.process_message_async/2
 
   defp set_url_opts(username, password, database, info) do
     url_opts = [

@@ -16,8 +16,6 @@ defmodule WalEx.TransactionFilter do
   alias WalEx.Config
   alias WalEx.Decoder.Messages.Relation.Column
 
-  require Logger
-
   defmodule Filter do
     @moduledoc "Parsed relation filter: schema, table, and an optional condition."
     defstruct [:schema, :table, :condition]

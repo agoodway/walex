@@ -345,6 +345,92 @@ in case the slot is already used `WalEx.Supervisor` will fail to start with a `R
 
 Be warned that there are many additional potential gotchas (a detailed guide is planned).
 
+##### ACK after processing
+
+By default, WalEx acknowledges each WAL position back to Postgres as soon as it is received, regardless of whether your event handlers have finished processing. This is safe and keeps replication lag low, but it means that if your process crashes mid-handler, Postgres has already discarded that WAL segment and the event will not be replayed on reconnect.
+
+For users on a **durable slot** who need stronger delivery guarantees, WalEx can hold back the acknowledgement until after each transaction has been fully handed off to your event handlers:
+
+```elixir
+# config.exs
+
+config :my_app, WalEx,
+  # ...
+  durable_slot: true,          # required — temporary slots lose WAL on reconnect anyway
+  slot_name: :my_app_slot,
+  ack_after_processing: true   # only acknowledge WAL after successful handler dispatch
+```
+
+With this option enabled:
+
+- WAL messages are processed **synchronously** — each transaction blocks the replication connection until `WalEx.Events` has accepted it.
+- The acknowledged LSN reported to Postgres only advances to positions that have been confirmed, so a crash and reconnect will replay any unacknowledged transactions from the durable slot.
+- Between transactions, WalEx acknowledges Postgres's reported position, since everything received so far has been handled. Inside a transaction, it acknowledges only the last handled commit. If nothing has been handled yet (e.g. right after a restart), it reports the slot's own saved position, which WalEx reads when it connects; when that is unknown, it still answers Postgres's keepalive requests, with a position of `0`, so the connection isn't dropped for silence while the slot stays put.
+
+**Important caveats:**
+
+- `ack_after_processing: true` requires `durable_slot: true`. Enabling it on a temporary slot raises a `RuntimeError` at startup, since temporary slots do not retain WAL across reconnects and the guarantee would be meaningless.
+- `ack_after_processing: true` cannot be combined with a custom `message_middleware` and raises a `RuntimeError` at startup if you try. Acknowledgements rely on WalEx handing each message to `WalEx.Replication.Publisher` synchronously, which WalEx cannot verify for a custom middleware.
+- `ack_after_processing` and `standby_status_interval` are read once at startup and cannot be changed with `replace_config/3`.
+- While `ack_after_processing` is on, `replace_config/3` raises an `ArgumentError` and leaves the config unchanged if you try to set `durable_slot` to anything other than `true`, or `message_middleware` to anything other than the default synchronous middleware. `WalEx.Replication.Server` also re-checks the config every time it starts, and refuses to start rather than replicate without the guarantee.
+- "Acknowledged" means the transaction was dispatched to `WalEx.Events` — not that your downstream I/O (database write, HTTP call, etc.) succeeded. For true end-to-end guarantees, write to a durable queue (Oban, Kafka, SQS, etc.) inside your handler and rely on that system's retry semantics.
+- Only the `on_event` / `on_insert` / `on_update` / `on_delete` block itself is covered. Functions passed in the `functions` list (e.g. `on_insert(:user, %{}, [{MyApp.Mailer, :welcome}], fn ... end)`) run in separate, unsupervised `Task`s; WalEx does not wait for them, and their failures are not retried.
+- A handler that raises crashes the replication processes, and the same transaction is replayed when they restart. A transaction that **always** fails ("poison pill") is therefore replayed again and again. Either it loops indefinitely, or, if it fails more than 10 times within 5 seconds, the replication supervisor gives up. In both cases replication makes no progress and Postgres keeps retaining WAL until it is fixed. Rescue errors you can tolerate inside the handler, or send the failing events to a dead-letter queue, and alert on the `[:walex, :event_handler, :exception]` telemetry event (see below).
+- Postgres enforces a [`wal_sender_timeout`](https://www.postgresql.org/docs/current/runtime-config-replication.html) (default 60 s). If your handlers take longer than this, Postgres will disconnect the replication client. On reconnect with a durable slot, WalEx will resume from the last acknowledged position.
+- Holding back ACKs prevents Postgres from advancing the replication slot's LSN. On busy write workloads this increases WAL retention pressure and can degrade autovacuum performance. Monitor the `oldest_active_logical_replication_slot_xid_age` metric (or its AWS RDS equivalent) if you enable this feature in production.
+
+##### Periodic standby status (`standby_status_interval`)
+
+Postgres asks a replication client for a status update only when `wal_sender_timeout` is greater than `0`, and only after half of that timeout has passed without hearing from the client. If `wal_sender_timeout` is `0` (disabled) it never asks. A client that only answers requests then never reports a flushed position, so the slot's `confirmed_flush_lsn` stays pinned and the database retains WAL indefinitely. This is most visible when the publication covers few tables, because the stream is then mostly keepalives.
+
+Set `standby_status_interval` (milliseconds) and WalEx sends a status update on that schedule, independent of the server:
+
+```elixir
+config :my_app, WalEx,
+  # ...
+  standby_status_interval: 30_000
+```
+
+- Without `ack_after_processing`, each update reports the latest WAL position the server has told WalEx about.
+- With `ack_after_processing`, updates report the last fully processed commit while a transaction is open, and the server's latest position when none is. Dispatch is synchronous in that mode, so a position seen while idle has been fully processed.
+- Updates start with the first message of each connection and stop when the connection drops.
+- It is disabled by default. Alert on `OldestReplicationSlotLag` (AWS) or `pg_replication_slots` retained WAL either way.
+
+##### Connection lifecycle (`on_connect` and telemetry)
+
+Postgres redelivers a slot's unacknowledged transactions whenever the connection comes back, and a reconnect can follow a failover, restore or major upgrade of the database. Code that caches anything about the stream should be told. Define `on_connect` in a module that uses `WalEx.Event`:
+
+```elixir
+defmodule MyApp.Events do
+  use WalEx.Event, name: MyApp
+
+  on_connect(fn %{app_name: _app, slot_name: _slot, reconnect?: reconnect?} ->
+    MyApp.Cache.reset(reconnect?)
+  end)
+end
+```
+
+The block runs on every connection, including the first (`reconnect?: false`). `reconnect?` is `false` only for the first connection since the WalEx instance started; it stays `true` when WalEx's replication processes restart after a crash, since Postgres redelivers in that case too. An error raised in the block is logged and ignored.
+
+The block runs asynchronously in `WalEx.Events.EventModules`, the same process that runs your event handlers:
+
+- It is queued as soon as the connection opens, so it runs before any transaction from the new connection reaches your handlers. Transactions that the previous connection had already queued may still be handled after it.
+- It doesn't hold up the connection itself, but a slow hook does delay event processing. With `ack_after_processing: true` that also holds up the replication stream, which waits for each transaction to be handled.
+
+Connection lifecycle telemetry events carry the app and slot name as metadata and a `system_time` measurement:
+
+- `[:walex, :replication, :connected]`, also carrying `reconnect?`. It fires as soon as the network connection to Postgres opens, *before* WalEx checks the publication and acquires the slot (which may wait while another client holds the slot). It does not mean changes are flowing yet.
+- `[:walex, :replication, :streaming]` fires on the first replication message of a connection, i.e. once the slot is acquired and Postgres is streaming.
+- `[:walex, :replication, :disconnected]` fires when the connection drops.
+
+##### Event handler telemetry
+
+Each call into an event module's handler (`process_all`, `process_insert`, `process_update`, `process_delete`) is a [telemetry span](https://hexdocs.pm/telemetry/telemetry.html#span/3) with `app_name`, `module` and `function` as metadata:
+
+- `[:walex, :event_handler, :start]`
+- `[:walex, :event_handler, :stop]`, with the call's `duration`
+- `[:walex, :event_handler, :exception]`, with `kind`, `reason` and `stacktrace`, when the handler raises. The error is then re-raised, so WalEx's failure handling is unchanged.
+
 ##### Event middleware / Back-pressure
 
 WalEx receives events from Postgres in `WalEx.Replication.Server` and then `cast` those to `WalEx.Replication.Publisher`.

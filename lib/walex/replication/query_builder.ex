@@ -12,9 +12,12 @@ defmodule WalEx.Replication.QueryBuilder do
     "SELECT 1 FROM pg_publication WHERE pubname = '#{publication}' LIMIT 1;"
   end
 
-  @doc "Query that returns the `active` flag for the configured replication slot."
+  @doc """
+  Query that returns the `active` flag and `confirmed_flush_lsn` for the
+  configured replication slot.
+  """
   def slot_exists(%{slot_name: slot_name}) do
-    "SELECT active FROM pg_replication_slots WHERE slot_name = '#{slot_name}' LIMIT 1;"
+    "SELECT active, confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = '#{slot_name}' LIMIT 1;"
   end
 
   @doc "Replication command to create a temporary logical slot dropped on disconnect."

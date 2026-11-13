@@ -23,7 +23,6 @@ defmodule WalEx.Event do
           lsn: {integer(), integer()}
         }
 
-  require Logger
   import WalEx.TransactionFilter
 
   alias WalEx.{Changes, Config, Event, Helpers}

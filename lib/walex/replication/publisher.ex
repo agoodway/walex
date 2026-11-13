@@ -13,6 +13,8 @@ defmodule WalEx.Replication.Publisher do
   alias WalEx.{Changes, Config, Events}
   alias WalEx.Decoder.Messages
 
+  require Logger
+
   defmodule State do
     @moduledoc "Publisher state: open transaction plus accumulated relation and type tables."
     defstruct relations: %{}, transaction: nil, types: %{}
@@ -252,9 +254,29 @@ defmodule WalEx.Replication.Publisher do
     }
   end
 
+  # Postgres sends BEGIN with the LSN its COMMIT will carry, so a mismatch (or
+  # a COMMIT with no BEGIN) means the stream is out of step. The transaction is
+  # dropped, as before, but not silently: with ack_after_processing its
+  # position is still acknowledged once the next keepalive arrives.
+  defp process_message(%{message: %Messages.Commit{lsn: commit_lsn}}, state = %State{}) do
+    reason =
+      case state.transaction do
+        {lsn, _txn} -> "the open transaction is at #{format_lsn(lsn)}"
+        nil -> "no transaction is open"
+      end
+
+    Logger.warning("Dropping COMMIT at #{format_lsn(commit_lsn)}: #{reason}")
+
+    state
+  end
+
   defp process_message(%{message: _message}, state) do
     :noop
     state
+  end
+
+  defp format_lsn({xlog_file, xlog_offset}) do
+    Integer.to_string(xlog_file, 16) <> "/" <> Integer.to_string(xlog_offset, 16)
   end
 
   defp data_tuple_to_map(columns, tuple_data) when is_list(columns) and is_tuple(tuple_data) do
