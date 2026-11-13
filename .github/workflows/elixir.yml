@@ -54,6 +54,12 @@ jobs:
       run: |
         mix test
 
+    # Excluded from `mix test` because it creates a durable replication slot;
+    # safe here against the disposable compose database.
+    - name: Run crash/replay test
+      run: |
+        mix test --only replay
+
     - name: Check code quality, security and format
       run: |
         mix quality

@@ -14,4 +14,4 @@ exclude =
     [:pg_restart]
   end
 
-ExUnit.start(capture_log: true, exclude: exclude)
+ExUnit.start(capture_log: true, exclude: [:replay | exclude])
