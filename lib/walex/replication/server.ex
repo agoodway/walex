@@ -30,6 +30,17 @@ defmodule WalEx.Replication.Server do
   def init(opts) do
     app_name = Keyword.get(opts, :app_name)
 
+    # The config agent outlives this process, so a config that was valid at
+    # startup may have been changed since. Refuse to replicate rather than
+    # acknowledge transactions whose handlers may not have run.
+    case app_name |> Config.get_configs() |> Config.validate_ack_after_processing() do
+      :ok ->
+        :ok
+
+      {:error, message} ->
+        raise ArgumentError, "invalid WalEx config for #{inspect(app_name)}: #{message}"
+    end
+
     [
       slot_name: slot_name,
       publication: publication,

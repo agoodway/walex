@@ -215,6 +215,86 @@ defmodule WalEx.ConfigTest do
         end
       end
     end
+
+    test "should allow replacing durable_slot and message_middleware without ack_after_processing" do
+      middleware = fn _message, _app -> :ok end
+
+      assert :ok = Config.replace_config(@app_name, :message_middleware, middleware)
+      assert :ok = Config.replace_config(@app_name, :durable_slot, true)
+
+      assert middleware == Config.get_configs(@app_name, :message_middleware)
+      assert true == Config.get_configs(@app_name, :durable_slot)
+    end
+  end
+
+  describe "replace_config/3 with ack_after_processing" do
+    @ack_app :replace_ack_app
+
+    setup do
+      configs =
+        @base_configs
+        |> Keyword.put(:name, @ack_app)
+        |> Keyword.put(:durable_slot, true)
+        |> Keyword.put(:ack_after_processing, true)
+
+      {:ok, _pid} = Config.start_link(configs: configs)
+      :ok
+    end
+
+    test "rejects an asynchronous message_middleware and keeps the old one" do
+      before = Config.get_configs(@ack_app)
+
+      assert_raise ArgumentError, ~r/cannot replace :message_middleware/, fn ->
+        Config.replace_config(
+          @ack_app,
+          :message_middleware,
+          &Publisher.process_message_async/2
+        )
+      end
+
+      assert before == Config.get_configs(@ack_app)
+    end
+
+    test "rejects a custom message_middleware" do
+      assert_raise ArgumentError, ~r/synchronous message_middleware/, fn ->
+        Config.replace_config(@ack_app, :message_middleware, fn _message, _app -> :ok end)
+      end
+
+      assert (&Publisher.process_message_sync/2) ==
+               Config.get_configs(@ack_app, :message_middleware)
+    end
+
+    test "rejects durable_slot: false and keeps the slot durable" do
+      assert_raise ArgumentError,
+                   ~r/cannot replace :durable_slot.*requires durable_slot: true/,
+                   fn ->
+                     Config.replace_config(@ack_app, :durable_slot, false)
+                   end
+
+      assert true == Config.get_configs(@ack_app, :durable_slot)
+    end
+
+    test "accepts values that keep the guarantee" do
+      assert :ok =
+               Config.replace_config(
+                 @ack_app,
+                 :message_middleware,
+                 &Publisher.process_message_sync/2
+               )
+
+      assert :ok = Config.replace_config(@ack_app, :durable_slot, true)
+      assert :ok = Config.replace_config(@ack_app, :password, "new_password")
+    end
+
+    test "the config agent survives a rejected replacement" do
+      pid = GenServer.whereis(WalExRegistry.set_name(:set_agent, Config, @ack_app))
+
+      assert_raise ArgumentError, fn ->
+        Config.replace_config(@ack_app, :durable_slot, false)
+      end
+
+      assert Process.alive?(pid)
+    end
   end
 
   describe "record_connection/1" do

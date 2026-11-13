@@ -225,6 +225,59 @@ defmodule WalEx.Replication.AckAfterProcessingTest do
     end
   end
 
+  describe "re-checking the config when Server starts" do
+    # The Config agent outlives Server, so a restart must not trust that the
+    # config is still the one validated at startup.
+    setup do
+      app = app_name("init_#{System.unique_integer([:positive])}")
+      start_config!(app, durable_slot: true, ack_after_processing: true)
+      %{app: app}
+    end
+
+    defp config_agent(app), do: WalEx.Config.Registry.set_name(:set_agent, Config, app)
+
+    test "starts with the validated config", %{app: app} do
+      assert {:ok, %{ack_after_processing: true, durable_slot: true, message_middleware: mw}} =
+               Server.init(app_name: app)
+
+      assert mw == (&Publisher.process_message_sync/2)
+    end
+
+    test "still starts after a rejected replacement", %{app: app} do
+      assert_raise ArgumentError, fn ->
+        Config.replace_config(app, :message_middleware, &Publisher.process_message_async/2)
+      end
+
+      assert {:ok, %{message_middleware: mw}} = Server.init(app_name: app)
+      assert mw == (&Publisher.process_message_sync/2)
+    end
+
+    test "refuses to start with an asynchronous middleware", %{app: app} do
+      Agent.update(config_agent(app), fn config ->
+        Keyword.put(config, :message_middleware, &Publisher.process_message_async/2)
+      end)
+
+      assert_raise ArgumentError, ~r/invalid WalEx config.*synchronous message_middleware/, fn ->
+        Server.init(app_name: app)
+      end
+    end
+
+    test "refuses to start with a temporary slot", %{app: app} do
+      Agent.update(config_agent(app), &Keyword.put(&1, :durable_slot, false))
+
+      assert_raise ArgumentError, ~r/invalid WalEx config.*requires durable_slot: true/, fn ->
+        Server.init(app_name: app)
+      end
+    end
+
+    test "is not checked when ack_after_processing is off" do
+      app = app_name("init_off")
+      start_config!(app, message_middleware: &Publisher.process_message_async/2)
+
+      assert {:ok, %{ack_after_processing: false}} = Server.init(app_name: app)
+    end
+  end
+
   describe "confirming commits through the real pipeline" do
     defp start_pipeline!(app, handler, extra \\ []) do
       start_config!(app, [durable_slot: true, modules: [handler]] ++ extra)

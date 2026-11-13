@@ -143,11 +143,54 @@ defmodule WalEx.Config do
   @doc """
   Replaces a single-valued config key
   (e.g. `:password`, `:hostname`, `:publication`).
+
+  When `ack_after_processing` is enabled, `:durable_slot` and
+  `:message_middleware` can only be replaced with values that keep the
+  delivery guarantee: `durable_slot: true`, and the synchronous default
+  middleware. Anything else raises `ArgumentError` and leaves the config
+  unchanged.
   """
   def replace_config(app_name, key, new_value) when key in @allowed_config_value do
-    Agent.update(set_agent(app_name), fn config ->
-      Keyword.put(config, key, new_value)
-    end)
+    result =
+      Agent.get_and_update(set_agent(app_name), fn config ->
+        updated = Keyword.put(config, key, new_value)
+
+        case validate_ack_after_processing(updated) do
+          :ok -> {:ok, updated}
+          error -> {error, config}
+        end
+      end)
+
+    case result do
+      :ok -> :ok
+      {:error, message} -> raise ArgumentError, "cannot replace #{inspect(key)}: #{message}"
+    end
+  end
+
+  @doc false
+  # Checks a resolved config (as stored in the agent) for combinations that
+  # break the ack_after_processing guarantee. Used by replace_config/3 and by
+  # WalEx.Replication.Server on every start, because the agent outlives the
+  # replication processes.
+  @spec validate_ack_after_processing(keyword()) :: :ok | {:error, String.t()}
+  def validate_ack_after_processing(config) do
+    cond do
+      Keyword.get(config, :ack_after_processing) != true ->
+        :ok
+
+      Keyword.get(config, :durable_slot) != true ->
+        {:error,
+         "ack_after_processing requires durable_slot: true — temporary slots do not retain WAL on reconnect"}
+
+      Keyword.get(config, :message_middleware) != (&Publisher.process_message_sync/2) ->
+        {:error,
+         "ack_after_processing requires the default synchronous message_middleware " <>
+           "(&WalEx.Replication.Publisher.process_message_sync/2) — acknowledgements assume " <>
+           "WalEx dispatches each message synchronously"}
+
+      true ->
+        :ok
+    end
   end
 
   defp build_app_configs(configs) do
