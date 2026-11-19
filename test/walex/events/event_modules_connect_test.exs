@@ -1,13 +1,12 @@
 defmodule WalEx.Events.EventModulesConnectTest do
   use ExUnit.Case, async: false
 
-  alias WalEx.Config
+  import WalEx.Support.TestHelpers, only: [pg_config: 0, start_config!: 2]
+
+  alias WalEx.{Config, Config.Registry}
   alias WalEx.Events.EventModules
 
-  @hostname System.get_env("PGHOST", "localhost")
-  @username System.get_env("PGUSER", "postgres")
-  @password System.get_env("PGPASSWORD", "postgres")
-  @port String.to_integer(System.get_env("PGPORT", "5432"))
+  @pg_config pg_config()
 
   defmodule WithHook do
     use WalEx.Event, name: :connect_hook_app
@@ -27,25 +26,35 @@ defmodule WalEx.Events.EventModulesConnectTest do
     on_event(:all, fn _events -> :ok end)
   end
 
-  setup do
-    start_supervised!(WalEx.Config.Registry.child_spec())
+  defmodule SlowHook do
+    use WalEx.Event, name: :connect_hook_app
+
+    on_connect(fn info ->
+      send(Process.whereis(:connect_hook_test), {:slow_hook, info})
+      Process.sleep(100)
+    end)
+  end
+
+  setup context do
+    start_supervised!(Registry.child_spec())
     Process.register(self(), :connect_hook_test)
 
     {:ok, _} =
       Config.start_link(
-        configs: [
-          name: :connect_hook_app,
-          hostname: @hostname,
-          username: @username,
-          password: @password,
-          database: "postgres",
-          port: @port,
-          ssl: false,
-          ssl_opts: [verify: :verify_none],
-          publication: "publication",
-          subscriptions: ["subscriptions"],
-          modules: [Raising, WithoutHook, WithHook]
-        ]
+        configs:
+          [
+            name: :connect_hook_app,
+            hostname: @pg_config[:hostname],
+            username: @pg_config[:username],
+            password: @pg_config[:password],
+            database: "postgres",
+            port: @pg_config[:port],
+            ssl: false,
+            ssl_opts: [verify: :verify_none],
+            publication: "publication",
+            subscriptions: ["subscriptions"],
+            modules: Map.get(context, :modules, [Raising, WithoutHook, WithHook])
+          ] ++ Map.get(context, :extra_config, [])
       )
 
     pid = start_supervised!({EventModules, app_name: :connect_hook_app})
@@ -71,6 +80,40 @@ defmodule WalEx.Events.EventModulesConnectTest do
   end
 
   test "connected/2 returns :ok even when nothing is listening" do
+    start_config!(:nobody_home, modules: [WithHook])
     assert :ok = EventModules.connected(:nobody_home, %{app_name: :nobody_home})
+  end
+
+  test "with ack_after_processing, connected/2 raises when configured modules are not running" do
+    start_config!(:hooks_down,
+      modules: [WithHook],
+      ack_after_processing: true,
+      durable_slot: true
+    )
+
+    assert_raise RuntimeError, ~r/not running/, fn ->
+      EventModules.connected(:hooks_down, %{app_name: :hooks_down})
+    end
+  end
+
+  describe "timing" do
+    @info %{app_name: :connect_hook_app, reconnect?: false}
+
+    @tag modules: [SlowHook]
+    @tag extra_config: [ack_after_processing: true, durable_slot: true]
+    test "with ack_after_processing, connected/2 returns only after the hook ran" do
+      assert :ok = EventModules.connected(:connect_hook_app, @info)
+
+      # No timeout: the hook must already have run when connected/2 returned.
+      assert_received {:slow_hook, %{reconnect?: false}}
+    end
+
+    @tag modules: [SlowHook]
+    test "without ack_after_processing, connected/2 returns before the hook finishes" do
+      assert :ok = EventModules.connected(:connect_hook_app, @info)
+
+      refute_received {:slow_hook, _}
+      assert_receive {:slow_hook, _}
+    end
   end
 end

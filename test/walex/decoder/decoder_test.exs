@@ -4,7 +4,7 @@
 defmodule WalEx.DecoderTest do
   use ExUnit.Case
 
-  doctest WalEx.Decoder, import: true
+  alias Postgrex.ReplicationConnection
 
   alias WalEx.Decoder.Messages.{
     Begin,
@@ -19,11 +19,15 @@ defmodule WalEx.DecoderTest do
     Update
   }
 
+  alias WalEx.Decoder
+
+  doctest Decoder, import: true
+
   test "decodes begin messages" do
     {:ok, expected_dt_no_microseconds, 0} = DateTime.from_iso8601("2019-07-18T17:02:35Z")
     expected_dt = DateTime.add(expected_dt_no_microseconds, 726_322, :microsecond)
 
-    assert WalEx.Decoder.decode_message(
+    assert Decoder.decode_message(
              <<66, 0, 0, 0, 2, 167, 244, 168, 128, 0, 2, 48, 246, 88, 88, 213, 242, 0, 0, 2, 107>>
            ) == %Begin{commit_timestamp: expected_dt, final_lsn: {2, 2_817_828_992}, xid: 619}
   end
@@ -32,7 +36,7 @@ defmodule WalEx.DecoderTest do
     {:ok, expected_dt_no_microseconds, 0} = DateTime.from_iso8601("2019-07-18T17:02:35Z")
     expected_dt = DateTime.add(expected_dt_no_microseconds, 726_322, :microsecond)
 
-    assert WalEx.Decoder.decode_message(
+    assert Decoder.decode_message(
              <<67, 0, 0, 0, 0, 2, 167, 244, 168, 128, 0, 0, 0, 2, 167, 244, 168, 176, 0, 2, 48,
                246, 88, 88, 213, 242>>
            ) == %Commit{
@@ -44,7 +48,7 @@ defmodule WalEx.DecoderTest do
   end
 
   test "decodes origin messages" do
-    assert WalEx.Decoder.decode_message(<<79, 0, 0, 0, 2, 167, 244, 168, 128>> <> "Elmer Fud") ==
+    assert Decoder.decode_message(<<79, 0, 0, 0, 2, 167, 244, 168, 128>> <> "Elmer Fud") ==
              %Origin{
                origin_commit_lsn: {2, 2_817_828_992},
                name: "Elmer Fud"
@@ -52,7 +56,7 @@ defmodule WalEx.DecoderTest do
   end
 
   test "decodes relation messages" do
-    assert WalEx.Decoder.decode_message(
+    assert Decoder.decode_message(
              <<82, 0, 0, 96, 0, 112, 117, 98, 108, 105, 99, 0, 102, 111, 111, 0, 100, 0, 2, 0, 98,
                97, 114, 0, 0, 0, 0, 25, 255, 255, 255, 255, 1, 105, 100, 0, 0, 0, 0, 23, 255, 255,
                255, 255>>
@@ -77,17 +81,17 @@ defmodule WalEx.DecoderTest do
              ]
            }
 
-    assert WalEx.Decoder.decode_message(
+    assert Decoder.decode_message(
              <<82, 0, 0, 71, 92, 112, 117, 98, 108, 105, 99, 0, 116, 101, 109, 112, 0, 100, 0, 1,
                0, 116, 101, 115, 116, 0, 0, 0, 6, 164, 255, 255, 255, 255>>
            ) ==
-             %WalEx.Decoder.Messages.Relation{
+             %Relation{
                id: 18_268,
                name: "temp",
                namespace: "public",
                replica_identity: :default,
                columns: [
-                 %WalEx.Decoder.Messages.Relation.Column{
+                 %Column{
                    flags: [],
                    name: "test",
                    type: "numeric",
@@ -98,7 +102,7 @@ defmodule WalEx.DecoderTest do
   end
 
   test "decodes type messages" do
-    assert WalEx.Decoder.decode_message(
+    assert Decoder.decode_message(
              <<89, 0, 0, 128, 52, 112, 117, 98, 108, 105, 99, 0, 101, 120, 97, 109, 112, 108, 101,
                95, 116, 121, 112, 101, 0>>
            ) ==
@@ -111,7 +115,7 @@ defmodule WalEx.DecoderTest do
 
   describe "truncate messages" do
     test "decodes messages" do
-      assert WalEx.Decoder.decode_message(<<84, 0, 0, 0, 1, 0, 0, 0, 96, 0>>) ==
+      assert Decoder.decode_message(<<84, 0, 0, 0, 1, 0, 0, 0, 96, 0>>) ==
                %Truncate{
                  number_of_relations: 1,
                  options: [],
@@ -120,7 +124,7 @@ defmodule WalEx.DecoderTest do
     end
 
     test "decodes messages with cascade option" do
-      assert WalEx.Decoder.decode_message(<<84, 0, 0, 0, 1, 1, 0, 0, 96, 0>>) ==
+      assert Decoder.decode_message(<<84, 0, 0, 0, 1, 1, 0, 0, 96, 0>>) ==
                %Truncate{
                  number_of_relations: 1,
                  options: [:cascade],
@@ -129,7 +133,7 @@ defmodule WalEx.DecoderTest do
     end
 
     test "decodes messages with restart identity option" do
-      assert WalEx.Decoder.decode_message(<<84, 0, 0, 0, 1, 2, 0, 0, 96, 0>>) ==
+      assert Decoder.decode_message(<<84, 0, 0, 0, 1, 2, 0, 0, 96, 0>>) ==
                %Truncate{
                  number_of_relations: 1,
                  options: [:restart_identity],
@@ -140,7 +144,7 @@ defmodule WalEx.DecoderTest do
 
   describe "data message (TupleData) decoder" do
     test "decodes insert messages" do
-      assert WalEx.Decoder.decode_message(
+      assert Decoder.decode_message(
                <<73, 0, 0, 96, 0, 78, 0, 2, 116, 0, 0, 0, 3, 98, 97, 122, 116, 0, 0, 0, 3, 53, 54,
                  48>>
              ) == %Insert{
@@ -150,7 +154,7 @@ defmodule WalEx.DecoderTest do
     end
 
     test "decodes insert messages with null values" do
-      assert WalEx.Decoder.decode_message(
+      assert Decoder.decode_message(
                <<73, 0, 0, 96, 0, 78, 0, 2, 110, 116, 0, 0, 0, 3, 53, 54, 48>>
              ) == %Insert{
                relation_id: 24_576,
@@ -159,7 +163,7 @@ defmodule WalEx.DecoderTest do
     end
 
     test "decodes insert messages with unchanged toasted values" do
-      assert WalEx.Decoder.decode_message(
+      assert Decoder.decode_message(
                <<73, 0, 0, 96, 0, 78, 0, 2, 117, 116, 0, 0, 0, 3, 53, 54, 48>>
              ) == %Insert{
                relation_id: 24_576,
@@ -168,7 +172,7 @@ defmodule WalEx.DecoderTest do
     end
 
     test "decodes update messages with default replica identity setting" do
-      assert WalEx.Decoder.decode_message(
+      assert Decoder.decode_message(
                <<85, 0, 0, 96, 0, 78, 0, 2, 116, 0, 0, 0, 7, 101, 120, 97, 109, 112, 108, 101,
                  116, 0, 0, 0, 3, 53, 54, 48>>
              ) == %Update{
@@ -180,7 +184,7 @@ defmodule WalEx.DecoderTest do
     end
 
     test "decodes update messages with FULL replica identity setting" do
-      assert WalEx.Decoder.decode_message(
+      assert Decoder.decode_message(
                <<85, 0, 0, 96, 0, 79, 0, 2, 116, 0, 0, 0, 3, 98, 97, 122, 116, 0, 0, 0, 3, 53, 54,
                  48, 78, 0, 2, 116, 0, 0, 0, 7, 101, 120, 97, 109, 112, 108, 101, 116, 0, 0, 0, 3,
                  53, 54, 48>>
@@ -193,7 +197,7 @@ defmodule WalEx.DecoderTest do
     end
 
     test "decodes update messages with USING INDEX replica identity setting" do
-      assert WalEx.Decoder.decode_message(
+      assert Decoder.decode_message(
                <<85, 0, 0, 96, 0, 75, 0, 2, 116, 0, 0, 0, 3, 98, 97, 122, 110, 78, 0, 2, 116, 0,
                  0, 0, 7, 101, 120, 97, 109, 112, 108, 101, 116, 0, 0, 0, 3, 53, 54, 48>>
              ) == %Update{
@@ -205,7 +209,7 @@ defmodule WalEx.DecoderTest do
     end
 
     test "decodes DELETE messages with USING INDEX replica identity setting" do
-      assert WalEx.Decoder.decode_message(
+      assert Decoder.decode_message(
                <<68, 0, 0, 96, 0, 75, 0, 2, 116, 0, 0, 0, 7, 101, 120, 97, 109, 112, 108, 101,
                  110>>
              ) == %Delete{
@@ -215,13 +219,40 @@ defmodule WalEx.DecoderTest do
     end
 
     test "decodes DELETE messages with FULL replica identity setting" do
-      assert WalEx.Decoder.decode_message(
+      assert Decoder.decode_message(
                <<68, 0, 0, 96, 0, 79, 0, 2, 116, 0, 0, 0, 3, 98, 97, 122, 116, 0, 0, 0, 3, 53, 54,
                  48>>
              ) == %Delete{
                relation_id: 24_576,
                old_tuple_data: {"baz", "560"}
              }
+    end
+  end
+
+  describe "lsn_to_integer/1" do
+    test "maps the zero LSN to 0" do
+      assert Decoder.lsn_to_integer({0, 0}) == 0
+    end
+
+    test "maps a low-offset-only LSN to the offset" do
+      assert Decoder.lsn_to_integer({0, 1}) == 1
+    end
+
+    test "shifts the file component into the high 32 bits" do
+      assert Decoder.lsn_to_integer({1, 0}) == 4_294_967_296
+    end
+
+    test "handles a high-file value from a real Postgres LSN" do
+      assert Decoder.lsn_to_integer({0x16, 0xB374D848}) == 0x16B374D848
+    end
+
+    test "handles the maximum 64-bit LSN" do
+      assert Decoder.lsn_to_integer({0xFFFFFFFF, 0xFFFFFFFF}) == 0xFFFFFFFFFFFFFFFF
+    end
+
+    test "agrees with Postgrex.ReplicationConnection.decode_lsn/1" do
+      assert {:ok, integer} = ReplicationConnection.decode_lsn("16/B374D848")
+      assert Decoder.lsn_to_integer({0x16, 0xB374D848}) == integer
     end
   end
 end

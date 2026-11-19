@@ -3,25 +3,23 @@ defmodule WalEx.EventTest do
   import WalEx.Support.TestHelpers
   import ExUnit.CaptureLog
 
+  alias WalEx.Changes.{Transaction, UpdatedRecord}
   alias WalEx.Events.EventModules, as: EventsEventModules
   alias WalEx.Events.Supervisor, as: EventsSupervisor
   alias WalEx.Replication.Publisher, as: ReplicationPublisher
   alias WalEx.Replication.Supervisor, as: ReplicationSupervisor
 
   @app_name :test_app
-  @hostname System.get_env("PGHOST", "localhost")
-  @username System.get_env("PGUSER", "postgres")
-  @password System.get_env("PGPASSWORD", "postgres")
+  @pg_config pg_config()
   @database "todos_test"
-  @port String.to_integer(System.get_env("PGPORT", "5432"))
 
   @base_configs [
     name: @app_name,
-    hostname: @hostname,
-    username: @username,
-    password: @password,
+    hostname: @pg_config[:hostname],
+    username: @pg_config[:username],
+    password: @pg_config[:password],
     database: @database,
-    port: @port,
+    port: @pg_config[:port],
     subscriptions: ["user", "todo"],
     publication: ["events"],
     modules: [TestApp.TestModule]
@@ -63,9 +61,9 @@ defmodule WalEx.EventTest do
           {:"$gen_call", _pid_and_ref,
            {
              :process,
-             %WalEx.Changes.Transaction{
+             %Transaction{
                changes: [
-                 %WalEx.Changes.UpdatedRecord{
+                 %UpdatedRecord{
                    type: "UPDATE",
                    old_record: _old_record,
                    record: %{
@@ -153,7 +151,9 @@ end
 defmodule TestApp.TestModule do
   use WalEx.Event, name: :test_app
 
-  def process_all(%WalEx.Changes.Transaction{}) do
+  alias WalEx.Changes.Transaction
+
+  def process_all(%Transaction{}) do
     raise RuntimeError, "Process error"
   end
 end

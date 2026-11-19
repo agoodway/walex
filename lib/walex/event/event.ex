@@ -4,28 +4,42 @@ defmodule WalEx.Event do
 
   Each replicated row change is cast into a `%WalEx.Event{}` containing the
   table (`name`), kind (`type`: `:insert | :update | :delete`), record(s),
-  changed fields (for updates), commit timestamp, LSN, and source metadata.
+  changed fields (for updates), commit timestamp, LSN, `change_index` (the change's
+  position within its transaction), and source metadata.
 
   Host modules `use WalEx.Event, name: MyApp` to gain the `on_insert/4`,
   `on_update/4`, `on_delete/4`, and `on_event/2` macros from `WalEx.Event.Dsl`.
   """
-  @derive Jason.Encoder
-  defstruct([:name, :type, :source, :new_record, :old_record, :changes, :timestamp, :lsn])
 
-  @type t :: %WalEx.Event{
+  alias Postgrex.ReplicationConnection
+  alias WalEx.{Changes, Config, Decoder, Event, Event.Source, Helpers}
+
+  @derive Jason.Encoder
+  defstruct([
+    :name,
+    :type,
+    :source,
+    :new_record,
+    :old_record,
+    :changes,
+    :timestamp,
+    :lsn,
+    :change_index
+  ])
+
+  @type t :: %__MODULE__{
           name: atom(),
           type: :insert | :update | :delete,
-          source: WalEx.Event.Source.t(),
+          source: Source.t(),
           new_record: map() | nil,
           old_record: map() | nil,
           changes: map() | nil,
           timestamp: DateTime.t(),
-          lsn: {integer(), integer()}
+          lsn: Changes.lsn(),
+          change_index: Changes.change_index() | nil
         }
 
   import WalEx.TransactionFilter
-
-  alias WalEx.{Changes, Config, Event, Helpers}
 
   @doc """
   Installs the `WalEx.Event.Dsl` macros (`on_insert/4`, `on_update/4`,
@@ -53,78 +67,51 @@ defmodule WalEx.Event do
   `Event` struct, attaching source metadata for `app_name`. Returns `nil` for
   unrecognised inputs.
   """
+  def cast(change = %Changes.NewRecord{type: "INSERT", record: record}, app_name),
+    do: %Event{base_event(change, app_name) | type: :insert, new_record: record}
+
   def cast(
-        %Changes.NewRecord{
-          type: "INSERT",
-          schema: schema,
-          table: table,
-          columns: columns,
-          record: record,
-          commit_timestamp: timestamp,
-          lsn: lsn
-        },
+        change = %Changes.UpdatedRecord{type: "UPDATE", record: record, old_record: old_record},
         app_name
       ) do
     %Event{
-      name: String.to_atom(table),
-      type: :insert,
-      source: cast_source(app_name, schema, table, columns),
-      new_record: record,
-      timestamp: timestamp,
-      lsn: lsn
+      base_event(change, app_name)
+      | type: :update,
+        new_record: record,
+        changes: map_changes(old_record, record)
     }
   end
 
-  def cast(
-        %Changes.UpdatedRecord{
-          type: "UPDATE",
-          schema: schema,
-          table: table,
-          columns: columns,
-          record: record,
-          old_record: old_record,
-          commit_timestamp: timestamp,
-          lsn: lsn
-        },
-        app_name
-      ) do
-    %Event{
-      name: String.to_atom(table),
-      type: :update,
-      source: cast_source(app_name, schema, table, columns),
-      new_record: record,
-      changes: map_changes(old_record, record),
-      timestamp: timestamp,
-      lsn: lsn
-    }
-  end
-
-  def cast(
-        %Changes.DeletedRecord{
-          type: "DELETE",
-          schema: schema,
-          table: table,
-          columns: columns,
-          old_record: old_record,
-          commit_timestamp: timestamp,
-          lsn: lsn
-        },
-        app_name
-      ) do
-    %Event{
-      name: String.to_atom(table),
-      type: :delete,
-      source: cast_source(app_name, schema, table, columns),
-      old_record: old_record,
-      timestamp: timestamp,
-      lsn: lsn
-    }
-  end
+  def cast(change = %Changes.DeletedRecord{type: "DELETE", old_record: old_record}, app_name),
+    do: %Event{base_event(change, app_name) | type: :delete, old_record: old_record}
 
   def cast(_event, _event_name), do: nil
 
+  # The fields every row change shares.
+  defp base_event(
+         %{
+           schema: schema,
+           table: table,
+           columns: columns,
+           commit_timestamp: timestamp,
+           lsn: lsn,
+           change_index: change_index
+         },
+         app_name
+       ) do
+    %Event{
+      # Bounded: table names come from the database schema, one atom per table
+      # (public API: %WalEx.Event{name: atom}).
+      name: String.to_atom(table),
+      source: cast_source(app_name, schema, table, columns),
+      timestamp: timestamp,
+      lsn: lsn,
+      change_index: change_index
+    }
+  end
+
   defp cast_source(app_name, schema, table, columns) do
-    %WalEx.Event.Source{
+    %Source{
       name: Helpers.get_source_name(),
       version: Helpers.get_source_version(),
       db: Config.get_database(app_name),
@@ -134,10 +121,13 @@ defmodule WalEx.Event do
     }
   end
 
-  @doc "Casts every change in a list (typically `txn.changes`) to an `Event` for `app_name`."
+  @doc """
+  Casts every change in a list (typically `txn.changes`) to an `Event` for
+  `app_name`. Changes with no `Event` form (a `TRUNCATE`) are left out, so
+  handlers never receive `nil`.
+  """
   def cast_events(changes, app_name) do
-    changes
-    |> Enum.map(&cast(&1, app_name))
+    for change <- changes, event = cast(change, app_name), do: event
   end
 
   @doc """
@@ -181,10 +171,10 @@ defmodule WalEx.Event do
     |> cast_events(app_name)
   end
 
-  @spec lsn_to_string({integer(), integer()}) :: String.t()
-  def lsn_to_string({high, low}) do
-    low = Integer.to_string(low, 16)
-    high = Integer.to_string(high, 16)
-    "#{high}/#{low}"
+  @doc "Formats an LSN tuple the way Postgres prints it, e.g. `\"16/B374D848\"`."
+  @spec lsn_to_string(Changes.lsn()) :: String.t()
+  def lsn_to_string(lsn) do
+    {:ok, string} = lsn |> Decoder.lsn_to_integer() |> ReplicationConnection.encode_lsn()
+    string
   end
 end

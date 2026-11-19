@@ -2,27 +2,28 @@ defmodule WalEx.DatabaseTest do
   use ExUnit.Case, async: false
   import WalEx.Support.TestHelpers
   import ExUnit.CaptureLog
+  alias Postgrex.Error
   alias WalEx.Supervisor, as: WalExSupervisor
 
   require Logger
 
-  @hostname System.get_env("PGHOST", "localhost")
-  @username System.get_env("PGUSER", "postgres")
-  @password System.get_env("PGPASSWORD", "postgres")
+  @pg_config pg_config()
   @database "todos_test"
-  @port String.to_integer(System.get_env("PGPORT", "5432"))
 
   @base_configs [
     name: :todos,
-    hostname: @hostname,
-    username: @username,
-    password: @password,
+    hostname: @pg_config[:hostname],
+    username: @pg_config[:username],
+    password: @pg_config[:password],
     database: @database,
-    port: @port,
+    port: @pg_config[:port],
     subscriptions: ["user", "todo"],
     publication: "events",
     modules: [TestModule]
   ]
+
+  # The slots these tests create; `pg_drop_slots/2` touches no others.
+  @owned_slots ["todos_walex", "walex_test_userdefined", "walex_test_durable"]
 
   @replication_slot %{
     "active" => true,
@@ -34,7 +35,7 @@ defmodule WalEx.DatabaseTest do
   describe "logical replication" do
     setup do
       {{:ok, database_pid}, _log} = with_log(fn -> start_database() end)
-      pg_drop_slots(database_pid)
+      pg_drop_slots(database_pid, @owned_slots)
 
       %{database_pid: database_pid}
     end
@@ -56,6 +57,58 @@ defmodule WalEx.DatabaseTest do
       end)
     end
 
+    test "an injected publication is only ever a name, so no second statement runs", %{
+      database_pid: pid
+    } do
+      Process.flag(:trap_exit, true)
+      marker = "walex_s1_marker"
+
+      on_exit(fn ->
+        {:ok, conn} = Postgrex.start_link(Keyword.delete(@base_configs, :name))
+        Postgrex.query!(conn, "DROP TABLE IF EXISTS #{marker}", [])
+      end)
+
+      for injected <- [
+            "events'; CREATE TABLE #{marker}(id int); --",
+            "events\\'; CREATE TABLE #{marker}(id int); --"
+          ] do
+        config = Keyword.put(@base_configs, :publication, injected)
+
+        capture_log(fn ->
+          # The backslash variant is refused by the validator; the plain one is
+          # escaped, looked up as a name, and not found.
+          assert {:error, {:shutdown, {:failed_to_start_child, failed, reason}}} =
+                   WalExSupervisor.start_link(config)
+
+          assert failed in [WalEx.Config, WalEx.Replication.Supervisor]
+          assert inspect(reason) =~ ~r/ArgumentError|Publication doesn't exist/
+        end)
+      end
+
+      assert [%{"found" => false}] =
+               query(pid, "SELECT to_regclass('#{marker}') IS NOT NULL AS found")
+    end
+
+    test "a mixed-case publication name streams", %{database_pid: pid} do
+      Postgrex.query!(pid, ~s[DROP PUBLICATION IF EXISTS "WalexMixed"], [])
+      Postgrex.query!(pid, ~s[CREATE PUBLICATION "WalexMixed" FOR TABLE "user"], [])
+
+      on_exit(fn ->
+        {:ok, conn} = Postgrex.start_link(Keyword.delete(@base_configs, :name))
+        Postgrex.query!(conn, ~s[DROP PUBLICATION IF EXISTS "WalexMixed"], [])
+      end)
+
+      capture_log(fn ->
+        config = Keyword.put(@base_configs, :publication, "WalexMixed")
+        assert {:ok, _pid} = start_walex_supervised(config)
+        assert [_slot] = pg_replication_slots(pid)
+      end)
+
+      # pgoutput resolves publication_names on the first decoded change, so only
+      # a delivered event proves the name was quoted.
+      assert_update_user(pid)
+    end
+
     test "should start replication slot", %{database_pid: database_pid} do
       capture_log(fn ->
         assert {:ok, replication_pid} = start_walex_supervised(@base_configs)
@@ -65,7 +118,7 @@ defmodule WalEx.DatabaseTest do
     end
 
     test "user-defined slot_name", %{database_pid: database_pid} do
-      slot_name = "userdefined"
+      slot_name = "walex_test_userdefined"
 
       config = Keyword.put(@base_configs, :slot_name, slot_name)
 
@@ -132,10 +185,11 @@ defmodule WalEx.DatabaseTest do
         assert {:ok, supervisor_pid} = start_walex_supervised(@base_configs, TestSupervisor)
         database_pid = get_database_pid(supervisor_pid)
 
-        assert {:error, error} = terminate_database_connection(database_pid, @username)
+        assert {:error, error} =
+                 terminate_database_connection(database_pid, @pg_config[:username])
 
         assert match?(%DBConnection.ConnectionError{reason: :closed}, error) or
-                 match?(%Postgrex.Error{postgres: %{code: :admin_shutdown}}, error)
+                 match?(%Error{postgres: %{code: :admin_shutdown}}, error)
 
         assert_update_user(database_pid)
 
@@ -151,6 +205,7 @@ defmodule WalEx.DatabaseTest do
 
         assert is_pid(database_pid)
         assert [@replication_slot | _replication_slots] = pg_replication_slots(database_pid)
+        started_before = postmaster_start_time(database_pid)
 
         assert Process.exit(database_pid, :kill)
                |> tap_debug("Forcefully killed database connection: ")
@@ -161,6 +216,12 @@ defmodule WalEx.DatabaseTest do
 
         assert is_pid(new_database_pid)
         refute database_pid == new_database_pid
+        # A fast shutdown returns before the pool has reconnected, so wait for it
+        # instead of racing the restart.
+        wait_until(fn -> slot_active?(new_database_pid) end, "the slot to become active again")
+
+        # Without this, restarting some other server would pass the test.
+        assert postmaster_start_time(new_database_pid) != started_before
         assert_update_user(new_database_pid)
       end)
     end
@@ -169,7 +230,7 @@ defmodule WalEx.DatabaseTest do
       capture_log(fn ->
         assert [] = pg_replication_slots(database_pid)
 
-        slot_name = "durable_slot"
+        slot_name = "walex_test_durable"
         durable_opts = Keyword.merge(@base_configs, durable_slot: true, slot_name: slot_name)
 
         durable_slot = %{
@@ -388,14 +449,16 @@ defmodule WalEx.DatabaseTest do
   end
 
   defp pg_isready? do
-    case Rambo.run("pg_isready", ["-h", @hostname, "-p", Integer.to_string(@port)]) do
-      {:ok, %Rambo{status: 0, out: "localhost:5432 - accepting connections\n", err: ""}} ->
+    # The exit status says it all; the output embeds the host and port.
+    case Rambo.run("pg_isready", [
+           "-h",
+           @pg_config[:hostname],
+           "-p",
+           Integer.to_string(@pg_config[:port])
+         ]) do
+      {:ok, %Rambo{status: 0}} ->
         Logger.debug("PostgreSQL is running.")
         true
-
-      {:error, %Rambo{status: 2, out: "localhost:5432 - no response\n", err: ""}} ->
-        Logger.debug("PostgreSQL is not running.")
-        false
 
       error ->
         Logger.debug("PostgreSQL is not running: " <> inspect(error))
@@ -418,16 +481,35 @@ defmodule WalEx.DatabaseTest do
 
   defp start_database do
     Postgrex.start_link(
-      hostname: @hostname,
-      username: @username,
-      password: @password,
-      database: @database
+      hostname: @pg_config[:hostname],
+      username: @pg_config[:username],
+      password: @pg_config[:password],
+      database: @database,
+      port: @pg_config[:port]
+    )
+  end
+
+  defp postmaster_start_time(database_pid) do
+    [%{"started" => started}] =
+      query(database_pid, "SELECT pg_postmaster_start_time() AS started")
+
+    started
+  end
+
+  defp slot_active?(database_pid) do
+    match?(
+      {:ok, %{rows: [[true]]}},
+      Postgrex.query(
+        database_pid,
+        "SELECT active FROM pg_replication_slots WHERE slot_name = 'todos_walex'",
+        []
+      )
     )
   end
 
   defp assert_update_user(database_pid) do
     capture_log =
-      ExUnit.CaptureLog.capture_log(fn ->
+      capture_log(fn ->
         update_user(database_pid)
 
         :timer.sleep(1000)
@@ -441,6 +523,8 @@ end
 defmodule TestSupervisor do
   use Supervisor
 
+  alias WalEx.Supervisor, as: WalExSupervisor
+
   def start_link(configs) do
     Supervisor.start_link(__MODULE__, configs, name: __MODULE__)
   end
@@ -448,7 +532,7 @@ defmodule TestSupervisor do
   def init(configs) do
     children = [
       {Postgrex, configs},
-      {WalEx.Supervisor, configs}
+      {WalExSupervisor, configs}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

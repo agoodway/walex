@@ -6,6 +6,9 @@ defmodule WalEx.Config.RegistryTest do
 
   alias WalEx.Config.Registry, as: WalExRegistry
   alias WalEx.Config.RegistryTest, as: WalExRegistryTest
+  alias WalEx.{Events, Replication.Publisher, Replication.Server}
+  alias WalEx.Events.Supervisor, as: EventsSupervisor
+  alias WalEx.Replication.Supervisor, as: ReplicationSupervisor
   alias WalEx.Supervisor, as: WalExSupervisor
 
   @base_configs [
@@ -59,7 +62,7 @@ defmodule WalEx.Config.RegistryTest do
         assert GenServer.whereis(
                  WalExRegistry.set_name(
                    :set_supervisor,
-                   WalEx.Events.Supervisor,
+                   EventsSupervisor,
                    :test_name
                  )
                )
@@ -68,25 +71,19 @@ defmodule WalEx.Config.RegistryTest do
         assert GenServer.whereis(
                  WalExRegistry.set_name(
                    :set_supervisor,
-                   WalEx.Replication.Supervisor,
+                   ReplicationSupervisor,
                    :test_name
                  )
                )
                |> is_pid()
 
-        assert GenServer.whereis(
-                 WalExRegistry.set_name(:set_gen_server, WalEx.Events, :test_name)
-               )
+        assert GenServer.whereis(WalExRegistry.set_name(:set_gen_server, Events, :test_name))
                |> is_pid()
 
-        assert GenServer.whereis(
-                 WalExRegistry.set_name(:set_gen_server, WalEx.Replication.Server, :test_name)
-               )
+        assert GenServer.whereis(WalExRegistry.set_name(:set_gen_server, Server, :test_name))
                |> is_pid()
 
-        assert GenServer.whereis(
-                 WalExRegistry.set_name(:set_gen_server, WalEx.Replication.Publisher, :test_name)
-               )
+        assert GenServer.whereis(WalExRegistry.set_name(:set_gen_server, Publisher, :test_name))
                |> is_pid()
       end)
     end
@@ -115,7 +112,7 @@ defmodule WalEx.Config.RegistryTest do
 
         assert walex_supervisor_pid ==
                  GenServer.whereis(
-                   WalEx.Config.Registry.set_name(:set_supervisor, WalEx.Supervisor, :test_name)
+                   WalExRegistry.set_name(:set_supervisor, WalExSupervisor, :test_name)
                  )
       end)
     end

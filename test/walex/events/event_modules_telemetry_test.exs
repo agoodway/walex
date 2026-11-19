@@ -2,13 +2,11 @@ defmodule WalEx.Events.EventModulesTelemetryTest do
   use ExUnit.Case, async: false
 
   alias WalEx.Changes.Transaction
-  alias WalEx.Config
+  alias WalEx.{Config, Config.Registry}
   alias WalEx.Events.EventModules
 
-  @hostname System.get_env("PGHOST", "localhost")
-  @username System.get_env("PGUSER", "postgres")
-  @password System.get_env("PGPASSWORD", "postgres")
-  @port String.to_integer(System.get_env("PGPORT", "5432"))
+  import ExUnit.CaptureLog
+  import WalEx.Support.TestHelpers, only: [attach_telemetry: 1, start_config!: 2]
 
   defmodule Succeeding do
     def process_all(_txn), do: :ok
@@ -18,44 +16,28 @@ defmodule WalEx.Events.EventModulesTelemetryTest do
     def process_all(_txn), do: raise("handler failed")
   end
 
-  setup do
-    start_supervised!(WalEx.Config.Registry.child_spec())
-    test_pid = self()
-    id = "event-handler-#{System.unique_integer([:positive])}"
-
-    :telemetry.attach_many(
-      id,
-      [
-        [:walex, :event_handler, :start],
-        [:walex, :event_handler, :stop],
-        [:walex, :event_handler, :exception]
-      ],
-      fn event, measurements, metadata, _ ->
-        send(test_pid, {:telemetry, event, measurements, metadata})
-      end,
-      nil
-    )
-
-    on_exit(fn -> :telemetry.detach(id) end)
+  # Reports every call, so tests can see which handlers ran.
+  defmodule Recording do
+    def process_all(_txn), do: send(:event_modules_test, {:ran, __MODULE__, :process_all})
+    def process_insert(_txn), do: send(:event_modules_test, {:ran, __MODULE__, :process_insert})
   end
 
-  defp start_app!(app, modules) do
-    {:ok, _} =
-      Config.start_link(
-        configs: [
-          name: app,
-          hostname: @hostname,
-          username: @username,
-          password: @password,
-          database: "postgres",
-          port: @port,
-          ssl: false,
-          ssl_opts: [verify: :verify_none],
-          publication: "publication",
-          subscriptions: ["subscriptions"],
-          modules: modules
-        ]
-      )
+  defmodule Throwing do
+    def process_all(_txn), do: throw(:handler_threw)
+  end
+
+  setup do
+    start_supervised!(Registry.child_spec())
+
+    attach_telemetry([
+      [:walex, :event_handler, :start],
+      [:walex, :event_handler, :stop],
+      [:walex, :event_handler, :exception]
+    ])
+  end
+
+  defp start_app!(app, modules, extra \\ []) do
+    start_config!(app, [modules: modules] ++ extra)
 
     start_supervised!({EventModules, app_name: app})
   end
@@ -88,5 +70,89 @@ defmodule WalEx.Events.EventModulesTelemetryTest do
                       kind: :error,
                       reason: %RuntimeError{message: "handler failed"}
                     }}
+  end
+
+  describe "with ack_after_processing" do
+    @ack [ack_after_processing: true, durable_slot: true]
+
+    setup do
+      Process.register(self(), :event_modules_test)
+      :ok
+    end
+
+    test "a module that cannot be loaded is a handler failure, not a skipped handler" do
+      start_app!(:handler_ack_missing_app, [Succeeding], @ack)
+      # add_config/3 does not check that the module exists.
+      Config.add_config(:handler_ack_missing_app, :modules, WalEx.DoesNotExist)
+
+      capture_log(fn ->
+        assert {:error, {:handler_failed, %{module: WalEx.DoesNotExist}}} =
+                 EventModules.process(txn(), :handler_ack_missing_app)
+      end)
+    end
+
+    test "a raising handler is an error reply, and the exception event still fires" do
+      start_app!(:handler_ack_fail_app, [Failing], @ack)
+
+      log =
+        capture_log(fn ->
+          assert {:error,
+                  {:handler_failed,
+                   %{
+                     module: Failing,
+                     function: :process_all,
+                     kind: :error,
+                     exception: RuntimeError
+                   }}} = EventModules.process(txn(), :handler_ack_fail_app)
+        end)
+
+      # Logged once here, with the stacktrace that only this process has.
+      assert log =~ "handler failed"
+      assert log =~ "event_modules_telemetry_test.exs"
+
+      assert_receive {:telemetry, [:walex, :event_handler, :exception], %{duration: _},
+                      %{module: Failing, function: :process_all, kind: :error}}
+    end
+
+    test "EventModules stays up after a handler raises" do
+      pid = start_app!(:handler_ack_alive_app, [Failing], @ack)
+
+      capture_log(fn ->
+        assert {:error, _} = EventModules.process(txn(), :handler_ack_alive_app)
+        assert {:error, _} = EventModules.process(txn(), :handler_ack_alive_app)
+      end)
+
+      assert Process.alive?(pid)
+    end
+
+    test "a throw is reported with its kind" do
+      start_app!(:handler_ack_throw_app, [Throwing], @ack)
+
+      capture_log(fn ->
+        assert {:error, {:handler_failed, %{kind: :throw, exception: nil} = details}} =
+                 EventModules.process(txn(), :handler_ack_throw_app)
+
+        # Structural only: no message or thrown value, which can carry row data.
+        assert [:exception, :function, :kind, :module] == details |> Map.keys() |> Enum.sort()
+      end)
+    end
+
+    test "no further handlers run for the transaction after one fails" do
+      start_app!(:handler_ack_stop_app, [Failing, Recording], @ack)
+
+      capture_log(fn ->
+        assert {:error, _} = EventModules.process(txn(), :handler_ack_stop_app)
+      end)
+
+      refute_received {:ran, _, _}
+    end
+
+    test "every handler runs when none fails" do
+      start_app!(:handler_ack_ok_app, [Recording, Succeeding], @ack)
+
+      assert :ok = EventModules.process(txn(), :handler_ack_ok_app)
+      assert_received {:ran, Recording, :process_all}
+      assert_received {:ran, Recording, :process_insert}
+    end
   end
 end

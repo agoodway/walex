@@ -28,7 +28,7 @@ defmodule WalEx.Decoder do
       defstruct [:final_lsn, :commit_timestamp, :xid]
 
       @type t :: %__MODULE__{
-              final_lsn: WalEx.Decoder.Messages.lsn() | nil,
+              final_lsn: Messages.lsn() | nil,
               commit_timestamp: DateTime.t() | nil,
               xid: non_neg_integer() | nil
             }
@@ -40,8 +40,8 @@ defmodule WalEx.Decoder do
 
       @type t :: %__MODULE__{
               flags: [atom()],
-              lsn: WalEx.Decoder.Messages.lsn() | nil,
-              end_lsn: WalEx.Decoder.Messages.lsn() | nil,
+              lsn: Messages.lsn() | nil,
+              end_lsn: Messages.lsn() | nil,
               commit_timestamp: DateTime.t() | nil
             }
     end
@@ -51,7 +51,7 @@ defmodule WalEx.Decoder do
       defstruct [:origin_commit_lsn, :name]
 
       @type t :: %__MODULE__{
-              origin_commit_lsn: WalEx.Decoder.Messages.lsn() | nil,
+              origin_commit_lsn: Messages.lsn() | nil,
               name: String.t() | nil
             }
     end
@@ -179,6 +179,21 @@ defmodule WalEx.Decoder do
     # Logger.debug("Message before conversion " <> message)
     decode_message_impl(message)
   end
+
+  @doc """
+  Converts a decoded LSN tuple `{xlog_file, xlog_offset}` into its 64-bit integer form.
+
+  ## Examples
+
+      iex> lsn_to_integer({0, 0})
+      0
+
+      iex> lsn_to_integer({1, 0})
+      4294967296
+
+  """
+  @spec lsn_to_integer(Messages.lsn()) :: non_neg_integer()
+  def lsn_to_integer({xlog_file, xlog_offset}), do: Bitwise.bsl(xlog_file, 32) + xlog_offset
 
   defp decode_message_impl(<<"B", lsn::binary-8, timestamp::integer-64, xid::integer-32>>) do
     %Begin{

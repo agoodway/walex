@@ -233,7 +233,7 @@ defmodule WalEx.Casting.TypesTest do
 
     test "casts decimal arrays" do
       result = Types.cast_record("{1.1,2.2}", "_decimal")
-      assert length(result) == 2
+      assert [_, _] = result
     end
   end
 
@@ -265,7 +265,7 @@ defmodule WalEx.Casting.TypesTest do
           "_uuid"
         )
 
-      assert length(result) == 2
+      assert [_, _] = result
       assert Enum.at(result, 0) == "550e8400-e29b-41d4-a716-446655440000"
     end
   end

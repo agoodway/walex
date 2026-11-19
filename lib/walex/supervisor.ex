@@ -4,39 +4,39 @@ defmodule WalEx.Supervisor do
   use Supervisor
 
   alias WalEx.Config, as: WalExConfig
+  alias WalEx.Config.Registry, as: WalExRegistry
   alias WalEx.Events.Supervisor, as: EventsSupervisor
   alias WalEx.Replication.Supervisor, as: ReplicationSupervisor
-  alias WalExConfig.Registry, as: WalExRegistry
 
   @spec start_link(opts :: WalExConfig.start_opts()) :: Supervisor.on_start()
   def start_link(opts) do
     app_name = Keyword.get(opts, :name)
-    module_names = build_module_names(app_name, opts)
-    supervisor_opts = Keyword.put(opts, :modules, module_names)
 
-    validate_opts(supervisor_opts)
+    validate_opts(opts)
 
     {:ok, _pid} = WalExRegistry.start_registry()
 
     name = WalExRegistry.set_name(:set_supervisor, __MODULE__, app_name)
 
-    Supervisor.start_link(__MODULE__, supervisor_opts, name: name)
+    # The config agent resolves :modules itself, so it sees the list as given.
+    Supervisor.start_link(__MODULE__, opts, name: name)
   end
 
   @impl true
   def init(opts) do
     opts
     |> set_children()
-    |> Supervisor.init(strategy: :one_for_one)
+    |> Supervisor.init(strategy: strategy(WalExConfig.ack_after_processing?(opts)))
   end
 
-  # TODO: EventModules should be dynamic (only if modules exist)
-  defp build_module_names(app_name, opts) do
-    modules = Keyword.get(opts, :modules, [])
-    subscriptions = Keyword.get(opts, :subscriptions)
-
-    WalExConfig.build_module_names(app_name, modules, subscriptions)
-  end
+  # Each child depends on the ones started before it: replication dispatches
+  # to the event processes, and both read the config agent. With
+  # ack_after_processing, restarting one therefore restarts the ones after it
+  # too; the durable slot keeps everything unacknowledged. Otherwise a
+  # replication restart drops the temporary slot and the changes in between,
+  # so it is only restarted when it fails itself, as it always was.
+  defp strategy(true), do: :rest_for_one
+  defp strategy(false), do: :one_for_one
 
   defp validate_opts(opts) do
     missing_configs = missing_db_configs(opts) ++ missing_event_configs(opts)
@@ -46,17 +46,12 @@ defmodule WalEx.Supervisor do
     end
   end
 
-  defp missing_db_configs(opts) do
-    db_configs = [:hostname, :username, :password, :port, :database]
+  @db_configs [:hostname, :username, :password, :port, :database]
 
-    case Keyword.get(opts, :url) do
-      nil ->
-        Enum.filter(db_configs, &(not Keyword.has_key?(opts, &1)))
+  defp missing_db_configs(opts), do: missing_db_configs(opts, Keyword.get(opts, :url))
 
-      _has_url ->
-        []
-    end
-  end
+  defp missing_db_configs(opts, nil), do: Enum.reject(@db_configs, &Keyword.has_key?(opts, &1))
+  defp missing_db_configs(_opts, _has_url), do: []
 
   defp missing_event_configs(opts) do
     other_configs = [:subscriptions, :publication, :name]
@@ -69,7 +64,7 @@ defmodule WalEx.Supervisor do
 
     [
       {WalExConfig, configs: configs},
-      {EventsSupervisor, configs},
+      {EventsSupervisor, app_name: app_name},
       {ReplicationSupervisor, app_name: app_name}
     ]
   end

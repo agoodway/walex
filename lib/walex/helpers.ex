@@ -7,6 +7,8 @@ defmodule WalEx.Helpers do
   downstream attribution.
   """
 
+  require Logger
+
   @doc """
   Returns the dotted `"<table>.<change>"` event type for a given change kind.
 
@@ -30,4 +32,26 @@ defmodule WalEx.Helpers do
 
   @doc "Returns the running WalEx version as a string (from `Application.spec/2`)."
   def get_source_version, do: Application.spec(:walex)[:vsn] |> to_string()
+
+  @doc false
+  # Logs a failure caught with `catch kind, reason` (the only place that has the
+  # stacktrace) and returns the details that travel on: the kind and the
+  # exception module only, since a message or thrown value can hold row data.
+  @spec log_caught_failure(String.t(), :error | :exit | :throw, term(), Exception.stacktrace()) ::
+          %{kind: :error | :exit | :throw, exception: module() | nil}
+  def log_caught_failure(message, kind, reason, stacktrace) do
+    Logger.error(message <> "\n" <> Exception.format(kind, reason, stacktrace))
+
+    %{kind: kind, exception: exception_module(kind, reason, stacktrace)}
+  end
+
+  @doc false
+  # The exception module of a caught `kind`/`reason` (e.g. `RuntimeError`), or
+  # `nil` for a throw or an exit.
+  @spec exception_module(:error | :exit | :throw, term(), Exception.stacktrace()) ::
+          module() | nil
+  def exception_module(:error, reason, stacktrace),
+    do: Exception.normalize(:error, reason, stacktrace).__struct__
+
+  def exception_module(_kind, _reason, _stacktrace), do: nil
 end

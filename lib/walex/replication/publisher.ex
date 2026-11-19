@@ -9,19 +9,19 @@ defmodule WalEx.Replication.Publisher do
   """
   use GenServer
 
-  alias WalEx.Casting.Types
-  alias WalEx.{Changes, Config, Events}
-  alias WalEx.Decoder.Messages
+  alias WalEx.{Casting.Types, Changes, Config, Decoder.Messages, Event, Events, Helpers}
+  alias WalEx.Config.Registry, as: WalExRegistry
 
   require Logger
 
   defmodule State do
     @moduledoc "Publisher state: open transaction plus accumulated relation and type tables."
-    defstruct relations: %{}, transaction: nil, types: %{}
+    defstruct ack_after_processing: false, relations: %{}, transaction: nil, types: %{}
 
     @type t :: %__MODULE__{
+            ack_after_processing: boolean(),
             relations: %{optional(non_neg_integer()) => struct()},
-            transaction: WalEx.Changes.Transaction.t() | nil,
+            transaction: Changes.Transaction.t() | nil,
             types: %{optional(non_neg_integer()) => struct()}
           }
   end
@@ -41,78 +41,125 @@ defmodule WalEx.Replication.Publisher do
   end
 
   @doc "Casts a decoded replication message into the publisher (fire-and-forget)."
+  @spec process_message_async(struct(), atom()) :: :ok
   def process_message_async(message, app_name) do
     name = registry_name(app_name)
     GenServer.cast(name, %{message: message, app_name: app_name})
   end
 
-  @doc "Synchronously processes a decoded replication message; used by tests and synchronous middleware."
+  @doc """
+  Synchronously processes a decoded replication message; used by tests and
+  synchronous middleware.
+
+  Returns `{:error, reason}` when the message could not be applied (a dropped
+  COMMIT, a change for an unknown relation or whose tuple does not match the
+  relation's columns, a crash while building the change, or a failed
+  dispatch), so the caller can avoid acknowledging it. Any open transaction is
+  discarded on error.
+  """
+  @spec process_message_sync(struct(), atom()) :: :ok | {:error, term()}
   def process_message_sync(message, app_name) do
     name = registry_name(app_name)
     GenServer.call(name, %{message: message, app_name: app_name}, :infinity)
   end
 
   defp registry_name(app_name) do
-    Config.Registry.set_name(:set_gen_server, __MODULE__, app_name)
+    WalExRegistry.set_name(:set_gen_server, __MODULE__, app_name)
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
     Process.flag(:message_queue_data, :off_heap)
 
-    {:ok, %State{}}
+    {:ok,
+     %State{
+       ack_after_processing: opts |> Keyword.get(:app_name) |> Config.ack_after_processing?()
+     }}
   end
 
   @impl true
-  def handle_cast(message, state), do: {:noreply, process_message(message, state)}
+  def handle_cast(message, state) do
+    case process_message(message, state) do
+      {:ok, state} -> {:noreply, state}
+      # Nobody is waiting for a reply. Every failure was already logged where
+      # it was detected: in this module, or by EventModules for a handler.
+      {:error, _reason, state} -> {:noreply, state}
+    end
+  end
 
   @impl true
-  def handle_call(message, _from, state), do: {:reply, :ok, process_message(message, state)}
+  def handle_call(message, _from, state) do
+    case process_message_safely(message, state) do
+      {:ok, state} -> {:reply, :ok, state}
+      {:error, reason, state} -> {:reply, {:error, reason}, %{state | transaction: nil}}
+    end
+  end
+
+  # With ack_after_processing the caller acknowledges only on :ok, so a crash
+  # here (a value the casting cannot handle, say) is reported like any other
+  # failure: the transaction is redelivered after a backoff instead of the
+  # crash taking the replication server down with it and restarting without
+  # one. This is the only place that has the stacktrace, so the failure is
+  # logged here. Without it, and on the asynchronous path (no caller to tell),
+  # a crash propagates as it always did.
+  defp process_message_safely(message, state = %State{ack_after_processing: true}) do
+    process_message(message, state)
+  catch
+    kind, reason ->
+      failure =
+        Helpers.log_caught_failure(
+          "Publisher failed, its transaction will be redelivered:",
+          kind,
+          reason,
+          __STACKTRACE__
+        )
+
+      {:error, {:publisher_failed, failure}, state}
+  end
+
+  defp process_message_safely(message, state), do: process_message(message, state)
 
   defp process_message(
          %{message: %Messages.Begin{final_lsn: final_lsn, commit_timestamp: commit_timestamp}},
          state = %State{}
        ) do
-    %State{
-      state
-      | transaction: {
-          final_lsn,
-          %Changes.Transaction{changes: [], commit_timestamp: commit_timestamp}
-        }
-    }
+    {:ok,
+     %State{
+       state
+       | transaction: {
+           final_lsn,
+           %Changes.Transaction{changes: [], commit_timestamp: commit_timestamp}
+         }
+     }}
   end
 
+  # A COMMIT for the open transaction: BEGIN announced this same LSN.
   defp process_message(
-         %{message: %Messages.Commit{lsn: commit_lsn}, app_name: app_name},
-         %State{transaction: {current_txn_lsn, txn}, relations: _relations} = state
-       )
-       when commit_lsn == current_txn_lsn do
-    Events.process(txn, app_name)
-    state
+         %{message: %Messages.Commit{lsn: lsn}, app_name: app_name},
+         state = %State{transaction: {lsn, txn}}
+       ) do
+    case Events.process(txn, app_name) do
+      :ok -> {:ok, %State{state | transaction: nil}}
+      {:error, reason} -> {:error, reason, state}
+    end
   end
 
   defp process_message(%{message: %Messages.Type{} = msg}, state) do
-    %{state | types: Map.put(state.types, msg.id, msg.name)}
+    {:ok, %{state | types: Map.put(state.types, msg.id, msg.name)}}
   end
 
   defp process_message(%{message: %Messages.Relation{} = msg}, state) do
     updated_columns =
-      Enum.map(msg.columns, fn message ->
-        if Map.has_key?(state.types, message.type) do
-          %{message | type: state.types[message.type]}
-        else
-          message
-        end
-      end)
+      Enum.map(msg.columns, &%{&1 | type: Map.get(state.types, &1.type, &1.type)})
 
     updated_relations = %{msg | columns: updated_columns}
-    %{state | relations: Map.put(state.relations, msg.id, updated_relations)}
+    {:ok, %{state | relations: Map.put(state.relations, msg.id, updated_relations)}}
   end
 
   defp process_message(
          %{message: %Messages.Insert{relation_id: relation_id, tuple_data: tuple_data}},
          state = %State{
-           transaction: {lsn, %{commit_timestamp: commit_timestamp, changes: changes} = txn},
+           transaction: {lsn, %{commit_timestamp: commit_timestamp} = txn},
            relations: relations
          }
        )
@@ -131,13 +178,11 @@ defmodule WalEx.Replication.Publisher do
           lsn: lsn
         }
 
-        %State{
-          state
-          | transaction: {lsn, %{txn | changes: [new_record | changes]}}
-        }
+        {:ok, state} = add_change(state, lsn, txn, new_record)
+        check_columns(state, relation_id, columns, [tuple_data])
 
       _ ->
-        state
+        unknown_relation(state, relation_id)
     end
   end
 
@@ -151,7 +196,7 @@ defmodule WalEx.Replication.Publisher do
          },
          state = %State{
            relations: relations,
-           transaction: {lsn, %{commit_timestamp: commit_timestamp, changes: changes} = txn}
+           transaction: {lsn, %{commit_timestamp: commit_timestamp} = txn}
          }
        )
        when is_map(relations) do
@@ -171,13 +216,11 @@ defmodule WalEx.Replication.Publisher do
           lsn: lsn
         }
 
-        %State{
-          state
-          | transaction: {lsn, %{txn | changes: [updated_record | changes]}}
-        }
+        {:ok, state} = add_change(state, lsn, txn, updated_record)
+        check_columns(state, relation_id, columns, [old_tuple_data, tuple_data])
 
       _ ->
-        state
+        unknown_relation(state, relation_id)
     end
   end
 
@@ -191,13 +234,14 @@ defmodule WalEx.Replication.Publisher do
          },
          state = %State{
            relations: relations,
-           transaction: {lsn, %{commit_timestamp: commit_timestamp, changes: changes} = txn}
+           transaction: {lsn, %{commit_timestamp: commit_timestamp} = txn}
          }
        )
        when is_map(relations) do
     case Map.fetch(relations, relation_id) do
       {:ok, %{columns: columns, namespace: namespace, name: name}} when is_list(columns) ->
-        data = data_tuple_to_map(columns, old_tuple_data || changed_key_tuple_data)
+        tuple_data = old_tuple_data || changed_key_tuple_data
+        data = data_tuple_to_map(columns, tuple_data)
 
         deleted_record = %Changes.DeletedRecord{
           type: "DELETE",
@@ -209,15 +253,11 @@ defmodule WalEx.Replication.Publisher do
           lsn: lsn
         }
 
-        updated_state = %State{
-          state
-          | transaction: {lsn, %{txn | changes: [deleted_record | changes]}}
-        }
-
-        updated_state
+        {:ok, state} = add_change(state, lsn, txn, deleted_record)
+        check_columns(state, relation_id, columns, [tuple_data])
 
       _ ->
-        state
+        unknown_relation(state, relation_id)
     end
   end
 
@@ -229,55 +269,108 @@ defmodule WalEx.Replication.Publisher do
          }
        )
        when is_list(truncated_relations) and is_list(changes) and is_map(relations) do
-    new_changes =
-      Enum.reduce(truncated_relations, changes, fn truncated_relation, acc ->
-        case Map.fetch(relations, truncated_relation) do
-          {:ok, %{namespace: namespace, name: name}} ->
-            [
-              %Changes.TruncatedRelation{
-                type: "TRUNCATE",
-                schema: namespace,
-                table: name,
-                commit_timestamp: commit_timestamp
-              }
-              | acc
-            ]
+    {new_changes, unknown_ids} =
+      truncate_changes(truncated_relations, relations, lsn, commit_timestamp, changes)
 
-          _ ->
-            acc
-        end
-      end)
+    state = %State{state | transaction: {lsn, %{txn | changes: new_changes}}}
 
-    %State{
-      state
-      | transaction: {lsn, %{txn | changes: new_changes}}
-    }
+    case unknown_ids do
+      [] -> {:ok, state}
+      [relation_id | _] -> unknown_relation(state, relation_id)
+    end
   end
 
   # Postgres sends BEGIN with the LSN its COMMIT will carry, so a mismatch (or
-  # a COMMIT with no BEGIN) means the stream is out of step. The transaction is
-  # dropped, as before, but not silently: with ack_after_processing its
-  # position is still acknowledged once the next keepalive arrives.
+  # a COMMIT with no BEGIN) means the stream is out of step. It is reported as
+  # an error so that, with ack_after_processing, the caller does not
+  # acknowledge a transaction that was never handed to the handlers.
   defp process_message(%{message: %Messages.Commit{lsn: commit_lsn}}, state = %State{}) do
-    reason =
-      case state.transaction do
-        {lsn, _txn} -> "the open transaction is at #{format_lsn(lsn)}"
-        nil -> "no transaction is open"
-      end
+    open_lsn = open_transaction_lsn(state)
 
-    Logger.warning("Dropping COMMIT at #{format_lsn(commit_lsn)}: #{reason}")
+    Logger.warning(
+      "Dropping COMMIT at #{Event.lsn_to_string(commit_lsn)}: #{mismatch_reason(open_lsn)}"
+    )
 
-    state
+    {:error, {:commit_mismatch, %{commit_lsn: commit_lsn, open_lsn: open_lsn}}, state}
   end
 
-  defp process_message(%{message: _message}, state) do
-    :noop
-    state
+  defp process_message(%{message: _message}, state), do: {:ok, state}
+
+  defp open_transaction_lsn(%State{transaction: {lsn, _txn}}), do: lsn
+  defp open_transaction_lsn(%State{transaction: nil}), do: nil
+
+  defp mismatch_reason(nil), do: "no transaction is open"
+  defp mismatch_reason(lsn), do: "the open transaction is at #{Event.lsn_to_string(lsn)}"
+
+  # Changes are prepended, so the head holds the highest index so far. Reading it
+  # avoids a length/1 walk per change and keeps the index in commit order even
+  # though the list is handed to the handlers newest-first.
+  defp next_index([]), do: 0
+  defp next_index([%{change_index: last} | _]), do: last + 1
+
+  # The one place that numbers INSERT/UPDATE/DELETE changes, so a new change
+  # type cannot forget the index.
+  defp add_change(state = %State{}, lsn, txn, change) do
+    change = %{change | change_index: next_index(txn.changes)}
+    {:ok, %State{state | transaction: {lsn, %{txn | changes: [change | txn.changes]}}}}
   end
 
-  defp format_lsn({xlog_file, xlog_offset}) do
-    Integer.to_string(xlog_file, 16) <> "/" <> Integer.to_string(xlog_offset, 16)
+  # Prepends one TRUNCATE change per known relation, and returns the ids of
+  # those not in the relation table, in message order. The asynchronous path
+  # keeps the known ones; the synchronous one discards the transaction.
+  defp truncate_changes(relation_ids, relations, lsn, commit_timestamp, changes) do
+    {new_changes, unknown_ids} =
+      Enum.reduce(relation_ids, {changes, []}, fn relation_id, {acc, unknown_ids} ->
+        case Map.fetch(relations, relation_id) do
+          {:ok, %{namespace: namespace, name: name}} ->
+            truncated = %Changes.TruncatedRelation{
+              type: "TRUNCATE",
+              schema: namespace,
+              table: name,
+              commit_timestamp: commit_timestamp,
+              lsn: lsn,
+              change_index: next_index(acc)
+            }
+
+            {[truncated | acc], unknown_ids}
+
+          _ ->
+            {acc, [relation_id | unknown_ids]}
+        end
+      end)
+
+    {new_changes, Enum.reverse(unknown_ids)}
   end
+
+  # Applying the rest of the transaction without this change would produce an
+  # incomplete one, so the synchronous caller is told. The state is returned
+  # without the unknown change: the asynchronous path keeps skipping it as
+  # before.
+  defp unknown_relation(state, relation_id) do
+    Logger.warning("Change for unknown relation #{relation_id}; incomplete transaction")
+
+    {:error, {:unknown_relation, relation_id}, state}
+  end
+
+  # A tuple whose length differs from the relation's column count builds a
+  # record with values missing or silently dropped. The change is kept, so the
+  # asynchronous path delivers it as it always did; the synchronous one
+  # discards the transaction rather than acknowledge it. A missing tuple (an
+  # UPDATE without its old row) is not a mismatch.
+  defp check_columns(state, relation_id, columns, tuples) do
+    if Enum.all?(tuples, &columns_match?(columns, &1)) do
+      {:ok, state}
+    else
+      Logger.warning("Change for relation #{relation_id} does not match its columns")
+
+      {:error, {:column_mismatch, relation_id}, state}
+    end
+  end
+
+  defp columns_match?(columns, tuple_data) when is_tuple(tuple_data),
+    do: length(columns) == tuple_size(tuple_data)
+
+  defp columns_match?(_columns, _no_tuple), do: true
 
   defp data_tuple_to_map(columns, tuple_data) when is_list(columns) and is_tuple(tuple_data) do
     columns
@@ -292,6 +385,7 @@ defmodule WalEx.Replication.Publisher do
           {:cont, acc}
       end
     end)
+    # Bounded by the columns of the database schema (public API: atom keys).
     |> Map.new(fn {k, v} -> {String.to_atom(k), v} end)
   end
 

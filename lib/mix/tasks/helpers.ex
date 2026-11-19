@@ -7,12 +7,35 @@ defmodule Mix.Tasks.Walex.Helpers do
   custom Postgres connection settings.
   """
 
-  @config %{
-    hostname: System.get_env("PGHOST", "localhost"),
-    username: System.get_env("PGUSER", "postgres"),
-    password: System.get_env("PGPASSWORD", "postgres"),
-    port: String.to_integer(System.get_env("PGPORT", "5432"))
-  }
+  @test_database "todos_test"
+
+  @doc "The database the test suite runs against, created and dropped by the tasks."
+  @spec test_database() :: String.t()
+  def test_database, do: @test_database
+
+  @doc "Connection options from the `PG*` variables, read at call time so later changes are honoured."
+  @spec config() :: keyword()
+  def config do
+    [
+      hostname: System.get_env("PGHOST", "localhost"),
+      username: System.get_env("PGUSER", "postgres"),
+      password: System.get_env("PGPASSWORD", "postgres"),
+      port: String.to_integer(System.get_env("PGPORT", "5432"))
+    ]
+  end
+
+  @doc "The `config/0` options as the environment `psql` expects."
+  @spec psql_env() :: [{String.t(), String.t()}]
+  def psql_env do
+    config = config()
+
+    [
+      {"PGHOST", config[:hostname]},
+      {"PGUSER", config[:username]},
+      {"PGPASSWORD", config[:password]},
+      {"PGPORT", Integer.to_string(config[:port])}
+    ]
+  end
 
   @doc "Creates the given database via `psql` against the `postgres` maintenance database."
   def create_database(database_name) do
@@ -37,14 +60,7 @@ defmodule Mix.Tasks.Walex.Helpers do
   def database_cmd(cmd) do
     db_cmd = "psql " <> cmd
 
-    env = [
-      {"PGHOST", @config.hostname},
-      {"PGUSER", @config.username},
-      {"PGPASSWORD", @config.password},
-      {"PGPORT", Integer.to_string(@config.port)}
-    ]
-
-    case System.shell(db_cmd, env: env) do
+    case System.shell(db_cmd, env: psql_env()) do
       {output, 0} ->
         output
 

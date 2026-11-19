@@ -14,6 +14,7 @@ defmodule WalEx.MixProject do
       aliases: aliases(),
       name: "WalEx",
       source_url: "https://github.com/cpursley/walex",
+      docs: docs(),
       test_coverage: [tool: ExCoveralls],
       elixirc_paths: elixirc_paths(Mix.env()),
       compilers: compilers(),
@@ -35,19 +36,19 @@ defmodule WalEx.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:postgrex, ">= 0.20.0"},
-      {:decimal, "~> 3.1"},
+      {:postgrex, ">= 0.22.4"},
+      {:decimal, "~> 3.2"},
       {:jason, "~> 1.4"},
-      {:telemetry, "~> 1.0"},
+      {:telemetry, "~> 1.4"},
 
       # Dev & Test
-      {:ex_doc, "~> 0.40.3", only: :dev, runtime: false},
-      {:sobelow, "~> 0.14.1", only: [:dev, :test], runtime: false},
-      {:credo, "~> 1.7.18", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:doctor, "~> 0.22", only: [:dev, :test], runtime: false},
-      {:ex_dna, "~> 1.2", only: [:dev, :test], runtime: false},
-      {:ex_slop, "~> 0.3", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.40.4", only: :dev, runtime: false},
+      {:sobelow, "~> 0.19.0", only: [:dev, :test], runtime: false},
+      {:credo, "~> 1.7.19", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4.9", only: [:dev, :test], runtime: false},
+      {:doctor, "~> 0.23.0", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.5.4", only: [:dev, :test], runtime: false},
+      {:ex_slop, "~> 0.4.5", only: [:dev, :test], runtime: false},
       {:excoveralls, "~> 0.18.5", only: [:dev, :test], runtime: false},
       {:rambo, "~> 0.3.4", only: [:dev, :test], runtime: false}
     ]
@@ -57,9 +58,26 @@ defmodule WalEx.MixProject do
     "Listen to change events on your Postgres tables then perform callback-like actions with the data."
   end
 
+  defp docs() do
+    [
+      main: "readme",
+      extras: [
+        "README.md",
+        "docs/guides/postgres-setup.md",
+        "docs/guides/configuration.md",
+        "docs/guides/events.md",
+        "docs/guides/delivery-guarantees.md",
+        "docs/guides/telemetry.md"
+      ],
+      groups_for_extras: [
+        Guides: ~r{docs/guides/}
+      ]
+    ]
+  end
+
   defp package() do
     [
-      files: ~w(lib test .formatter.exs mix.exs README* LICENSE*),
+      files: ~w(lib test docs/guides .formatter.exs mix.exs README* LICENSE*),
       maintainers: ["Chase Pursley"],
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/cpursley/walex"}

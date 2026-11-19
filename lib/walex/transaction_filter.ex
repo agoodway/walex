@@ -178,6 +178,8 @@ defmodule WalEx.TransactionFilter do
   @doc "Returns `true` when the change's table matches `table_name` (atom or string)."
   def has_table?(%{table: table}, table_name) when is_atom(table), do: table == table_name
 
+  # Bounded: table names come from the database schema, so this creates at most
+  # one atom per table, and the atom is public API (%WalEx.Event{name: atom}).
   def has_table?(%{table: table}, table_name) when is_binary(table),
     do: String.to_atom(table) == table_name
 
@@ -250,6 +252,7 @@ defmodule WalEx.TransactionFilter do
   @doc "Builds a `%{column_name => type}` map from a list of `Relation.Column` structs."
   def map_columns(columns) do
     Enum.reduce(columns, %{}, fn %Column{name: name, type: type}, acc ->
+      # Bounded by the columns of the database schema (public API: atom keys).
       name = String.to_atom(name)
       Map.put(acc, name, type)
     end)

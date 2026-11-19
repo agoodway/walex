@@ -5,14 +5,6 @@ defmodule Mix.Tasks.Walex.Setup do
   use Mix.Task
   alias Mix.Tasks.Walex.Helpers
 
-  @test_database "todos_test"
-  @base_configs [
-    hostname: System.get_env("PGHOST", "localhost"),
-    username: System.get_env("PGUSER", "postgres"),
-    password: System.get_env("PGPASSWORD", "postgres"),
-    database: @test_database
-  ]
-
   @shortdoc "Set up test database and tables"
   @doc """
   Creates the `todos_test` database, installs extensions, builds the `user`
@@ -25,8 +17,9 @@ defmodule Mix.Tasks.Walex.Setup do
   end
 
   defp setup_test_database do
-    Helpers.create_database(@test_database)
-    {:ok, pid} = Postgrex.start_link(@base_configs)
+    database = Helpers.test_database()
+    Helpers.create_database(database)
+    {:ok, pid} = Postgrex.start_link(Keyword.put(Helpers.config(), :database, database))
 
     create_database_logic(pid)
     create_database_tables(pid)

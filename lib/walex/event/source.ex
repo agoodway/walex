@@ -10,7 +10,7 @@ defmodule WalEx.Event.Source do
   @derive Jason.Encoder
   defstruct([:name, :version, :db, :schema, :table, :columns])
 
-  @type t :: %WalEx.Event.Source{
+  @type t :: %__MODULE__{
           name: String.t() | nil,
           version: String.t(),
           db: String.t(),

@@ -71,6 +71,7 @@
           #
           {Credo.Check.Consistency.ExceptionNames, []},
           {Credo.Check.Consistency.LineEndings, []},
+          {Credo.Check.Consistency.MultiAliasImportRequireUse, []},
           {Credo.Check.Consistency.ParameterPatternMatching, []},
           {Credo.Check.Consistency.SpaceAroundOperators, []},
           {Credo.Check.Consistency.SpaceInParentheses, []},
@@ -83,7 +84,7 @@
           # Priority values are: `low, normal, high, higher`
           #
           {Credo.Check.Design.AliasUsage,
-           [priority: :low, if_nested_deeper_than: 2, if_called_more_often_than: 0]},
+           [priority: :low, if_nested_deeper_than: 0, if_called_more_often_than: 0]},
           {Credo.Check.Design.TagFIXME, []},
           # TODO comments are tracked but not fail-blocking — they represent
           # known engineering notes, not style violations.
@@ -163,7 +164,7 @@
           {Credo.Check.Warning.UnusedStringOperation, []},
           {Credo.Check.Warning.UnusedTupleOperation, []},
           {Credo.Check.Warning.WrongTestFileExtension, []}
-        ],
+        ] ++ Enum.map(ExSlop.recommended_checks(), &{&1, []}),
         disabled: [
           #
           # Checks scheduled for next check update (opt-in for now)
@@ -173,7 +174,6 @@
           # Controversial and experimental checks (opt-in, just move the check to `:enabled`
           #   and be sure to use `mix credo --strict` to see low priority checks)
           #
-          {Credo.Check.Consistency.MultiAliasImportRequireUse, []},
           {Credo.Check.Consistency.UnusedVariableNames, []},
           {Credo.Check.Design.DuplicatedCode, []},
           {Credo.Check.Design.SkipTestWithoutComment, []},

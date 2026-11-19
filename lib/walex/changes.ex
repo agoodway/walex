@@ -13,11 +13,20 @@ defmodule WalEx.Changes do
   These are subsequently mapped into the user-facing `WalEx.Event` structs.
   """
 
-  @typedoc "Postgres LSN as `{xlog_file, xlog_offset}`."
-  @type lsn :: {non_neg_integer(), non_neg_integer()}
+  alias WalEx.{Changes, Decoder.Messages}
+
+  @typedoc "Postgres LSN as `{xlog_file, xlog_offset}` (the decoder's `t:WalEx.Decoder.Messages.lsn/0`)."
+  @type lsn :: Messages.lsn()
+
+  @typedoc """
+  Position of a change within its transaction, counting from `0` in commit
+  order. `{lsn, change_index}` identifies a change and stays the same when the
+  transaction is redelivered.
+  """
+  @type change_index :: non_neg_integer()
 
   defmodule Transaction do
-    @moduledoc "Decoded transaction: an ordered list of row changes plus commit timestamp."
+    @moduledoc "Decoded transaction: its row changes, newest first (sort by `change_index` for commit order), plus the commit timestamp."
     defstruct [:changes, :commit_timestamp]
 
     @type t :: %__MODULE__{
@@ -28,7 +37,7 @@ defmodule WalEx.Changes do
 
   defmodule NewRecord do
     @moduledoc "A row inserted within a transaction."
-    defstruct [:type, :record, :schema, :table, :columns, :commit_timestamp, :lsn]
+    defstruct [:type, :record, :schema, :table, :columns, :commit_timestamp, :lsn, :change_index]
 
     @type t :: %__MODULE__{
             type: String.t(),
@@ -37,7 +46,8 @@ defmodule WalEx.Changes do
             table: String.t() | nil,
             columns: [struct()] | nil,
             commit_timestamp: DateTime.t() | nil,
-            lsn: WalEx.Changes.lsn() | nil
+            lsn: Changes.lsn() | nil,
+            change_index: Changes.change_index() | nil
           }
   end
 
@@ -51,7 +61,8 @@ defmodule WalEx.Changes do
       :table,
       :columns,
       :commit_timestamp,
-      :lsn
+      :lsn,
+      :change_index
     ]
 
     @type t :: %__MODULE__{
@@ -62,13 +73,23 @@ defmodule WalEx.Changes do
             table: String.t() | nil,
             columns: [struct()] | nil,
             commit_timestamp: DateTime.t() | nil,
-            lsn: WalEx.Changes.lsn() | nil
+            lsn: Changes.lsn() | nil,
+            change_index: Changes.change_index() | nil
           }
   end
 
   defmodule DeletedRecord do
     @moduledoc "A row deleted within a transaction; `old_record` contains the previous values when available."
-    defstruct [:type, :old_record, :schema, :table, :columns, :commit_timestamp, :lsn]
+    defstruct [
+      :type,
+      :old_record,
+      :schema,
+      :table,
+      :columns,
+      :commit_timestamp,
+      :lsn,
+      :change_index
+    ]
 
     @type t :: %__MODULE__{
             type: String.t(),
@@ -77,19 +98,22 @@ defmodule WalEx.Changes do
             table: String.t() | nil,
             columns: [struct()] | nil,
             commit_timestamp: DateTime.t() | nil,
-            lsn: WalEx.Changes.lsn() | nil
+            lsn: Changes.lsn() | nil,
+            change_index: Changes.change_index() | nil
           }
   end
 
   defmodule TruncatedRelation do
     @moduledoc "A `TRUNCATE` of one of the subscribed tables."
-    defstruct [:type, :schema, :table, :commit_timestamp]
+    defstruct [:type, :schema, :table, :commit_timestamp, :lsn, :change_index]
 
     @type t :: %__MODULE__{
             type: String.t(),
             schema: String.t() | nil,
             table: String.t() | nil,
-            commit_timestamp: DateTime.t() | nil
+            commit_timestamp: DateTime.t() | nil,
+            lsn: Changes.lsn() | nil,
+            change_index: Changes.change_index() | nil
           }
   end
 end

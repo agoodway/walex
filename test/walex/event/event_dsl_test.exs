@@ -7,22 +7,19 @@ defmodule WalEx.EventDslTest do
   alias WalEx.Events.Supervisor, as: EventsSupervisor
 
   @app_name :test_app
-  @hostname System.get_env("PGHOST", "localhost")
-  @username System.get_env("PGUSER", "postgres")
-  @password System.get_env("PGPASSWORD", "postgres")
+  @pg_config pg_config()
   @database "todos_test"
-  @port String.to_integer(System.get_env("PGPORT", "5432"))
 
   @dsl_base_configs [
     name: @app_name,
-    hostname: @hostname,
-    username: @username,
-    password: @password,
+    hostname: @pg_config[:hostname],
+    username: @pg_config[:username],
+    password: @pg_config[:password],
     database: @database,
-    port: @port,
+    port: @pg_config[:port],
     subscriptions: ["user", "todo"],
     publication: ["events"],
-    modules: [TestApp.DslTestModule]
+    modules: [TestApp.DslTestModule, TestApp.DslNoFilterModule]
   ]
 
   describe "on_event/2" do
@@ -49,7 +46,7 @@ defmodule WalEx.EventDslTest do
       assert is_pid(events_pid)
 
       capture_log =
-        ExUnit.CaptureLog.capture_log(fn ->
+        capture_log(fn ->
           update_user(database_pid)
 
           :timer.sleep(1000)
@@ -57,6 +54,37 @@ defmodule WalEx.EventDslTest do
 
       assert capture_log =~ "on_event event occurred"
       assert capture_log =~ "%WalEx.Event"
+    end
+  end
+
+  describe "on_event/2 without filters" do
+    test "on_event, on_insert, on_update and on_delete compile without explicit filters" do
+      source = """
+      defmodule TestApp.DslCompileNoFilters do
+        use WalEx.Event, name: :test_app
+
+        on_event(:user, fn events -> events end)
+        on_insert(:user, fn events -> events end)
+        on_update(:user, fn events -> events end)
+        on_delete(:user, fn events -> events end)
+      end
+      """
+
+      assert [{TestApp.DslCompileNoFilters, _bin}] = Code.compile_string(source)
+    end
+
+    test "the filterless handler receives events" do
+      {{:ok, database_pid}, _log} = with_log(fn -> start_database(@dsl_base_configs) end)
+      {{:ok, _pid}, _log} = with_log(fn -> start_walex_supervised(@dsl_base_configs) end)
+
+      capture_log =
+        capture_log(fn ->
+          update_user(database_pid)
+
+          :timer.sleep(1000)
+        end)
+
+      assert capture_log =~ "filterless on_event occurred: 1"
     end
   end
 
@@ -84,7 +112,7 @@ defmodule WalEx.EventDslTest do
       assert is_pid(events_pid)
 
       capture_log =
-        ExUnit.CaptureLog.capture_log(fn ->
+        capture_log(fn ->
           update_user(database_pid)
 
           :timer.sleep(1000)
@@ -110,4 +138,13 @@ defmodule TestApp.DslTestModule do
     [],
     fn events -> Logger.info("on_update event occurred: #{inspect(events, pretty: true)}") end
   )
+end
+
+defmodule TestApp.DslNoFilterModule do
+  require Logger
+  use WalEx.Event, name: :test_app
+
+  on_event(:user, fn events ->
+    Logger.info("filterless on_event occurred: #{length(events)}")
+  end)
 end
