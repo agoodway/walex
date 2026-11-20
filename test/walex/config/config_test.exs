@@ -267,7 +267,12 @@ defmodule WalEx.ConfigTest do
       assert :ok = Config.replace_config(@app_name, :durable_slot, nil)
       assert false == Config.get_configs(@app_name, :durable_slot)
 
-      for value <- ["false", "true", 1] do
+      assert :ok = Config.replace_config(@app_name, :durable_slot, "true")
+      assert true == Config.get_configs(@app_name, :durable_slot)
+      assert :ok = Config.replace_config(@app_name, :durable_slot, "false")
+      assert false == Config.get_configs(@app_name, :durable_slot)
+
+      for value <- ["yes", "TRUE", 1] do
         assert_raise ArgumentError, ~r/durable_slot must be true or false/, fn ->
           Config.replace_config(@app_name, :durable_slot, value)
         end
@@ -300,7 +305,8 @@ defmodule WalEx.ConfigTest do
       "events'; SELECT 1; --\\",
       String.duplicate("a", 64),
       String.duplicate("é", 32),
-      :events,
+      :"a\\b",
+      true,
       123
     ]
 
@@ -323,7 +329,7 @@ defmodule WalEx.ConfigTest do
     end
 
     test "build rejects an invalid name inside a publication list" do
-      for bad <- [["ok", "x\\y"], ["ok", :events], [:events], [], nil] do
+      for bad <- [["ok", "x\\y"], ["ok", :"x\\y"], ["ok", 123], [], nil] do
         assert_raise ArgumentError, ~r/publication/, fn ->
           Config.start_link(configs: Keyword.put(@base_configs, :publication, bad))
         end
@@ -351,6 +357,28 @@ defmodule WalEx.ConfigTest do
 
         assert {:ok, _pid} = Config.start_link(configs: configs)
       end
+    end
+
+    test "build turns atom publication names into strings" do
+      for {atom_value, expected, i} <- [{:events, "events", 0}, {[:a, "b"], ["a", "b"], 1}] do
+        name = :"pub_atom_#{i}"
+
+        configs =
+          @base_configs
+          |> Keyword.put(:publication, atom_value)
+          |> Keyword.put(:name, name)
+
+        assert {:ok, _pid} = Config.start_link(configs: configs)
+        assert expected == Config.get_configs(name, :publication)
+      end
+    end
+
+    test "replace_config turns an atom publication name into a string" do
+      configs = Keyword.put(@base_configs, :name, :replace_pub_atom_app)
+      {:ok, _pid} = Config.start_link(configs: configs)
+
+      assert :ok = Config.replace_config(:replace_pub_atom_app, :publication, :events)
+      assert "events" == Config.get_configs(:replace_pub_atom_app, :publication)
     end
 
     test "build rejects a slot_name that sanitizes to nothing" do
@@ -736,7 +764,7 @@ defmodule WalEx.ConfigTest do
     end
 
     for key <- [:ack_after_processing, :durable_slot],
-        value <- ["true", 1, :yes, "false"] do
+        value <- ["yes", "TRUE", 1, :yes] do
       test "rejects non-boolean #{key}: #{inspect(value)}" do
         configs =
           @base_configs
@@ -759,6 +787,18 @@ defmodule WalEx.ConfigTest do
       {:ok, _pid} = Config.start_link(configs: configs)
       assert false == Config.get_configs(:nil_bool_app, :durable_slot)
       assert false == Config.get_configs(:nil_bool_app, :ack_after_processing)
+    end
+
+    test "accepts true and false given as strings, e.g. from an env var" do
+      configs =
+        @base_configs
+        |> Keyword.put(:name, :string_bool_app)
+        |> Keyword.put(:durable_slot, "true")
+        |> Keyword.put(:ack_after_processing, "false")
+
+      {:ok, _pid} = Config.start_link(configs: configs)
+      assert true == Config.get_configs(:string_bool_app, :durable_slot)
+      assert false == Config.get_configs(:string_bool_app, :ack_after_processing)
     end
 
     test "accepts explicit false for both booleans" do

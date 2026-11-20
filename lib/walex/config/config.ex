@@ -33,7 +33,7 @@ defmodule WalEx.Config do
           | {:name, binary}
           | {:password, binary}
           | {:port, binary}
-          | {:publication, binary | [binary]}
+          | {:publication, binary | atom | [binary | atom]}
           | {:username, binary}
           | {:webhook_signing_secret, binary}
           | {:slot_name, binary}
@@ -249,8 +249,9 @@ defmodule WalEx.Config do
   `:hostname`, `:port`) cannot be replaced at all in that mode. Anything else
   raises `ArgumentError` and leaves the config unchanged.
 
-  `:durable_slot` follows the startup rule in either mode: `true` or `false`,
-  with `nil` read as `false`; anything else raises `ArgumentError`.
+  `:durable_slot` follows the startup rule in either mode: `true` or `false`
+  (or the strings `"true"` and `"false"`), with `nil` read as `false`; anything
+  else raises `ArgumentError`.
   """
   @spec replace_config(atom(), atom(), term()) :: :ok
   def replace_config(app_name, key, new_value) when key in @allowed_config_value do
@@ -398,7 +399,7 @@ defmodule WalEx.Config do
       ssl_opts: Keyword.get(configs, :ssl_opts, verify: :verify_none),
       socket_options: Keyword.get(configs, :socket_options, []),
       subscriptions: subscriptions,
-      publication: Keyword.get(configs, :publication),
+      publication: configs |> Keyword.get(:publication) |> parse_publication(),
       modules: module_names,
       webhook_signing_secret: Keyword.get(configs, :webhook_signing_secret),
       event_relay: Keyword.get(configs, :event_relay),
@@ -563,6 +564,9 @@ defmodule WalEx.Config do
   # enabled these options.
   defp to_boolean!(nil, _key), do: false
   defp to_boolean!(value, _key) when is_boolean(value), do: value
+  # Env vars arrive as strings, so the two unambiguous spellings are accepted.
+  defp to_boolean!("true", _key), do: true
+  defp to_boolean!("false", _key), do: false
 
   defp to_boolean!(other, key),
     do: raise(ArgumentError, "#{key} must be true or false, got: #{inspect(other)}")
@@ -571,7 +575,18 @@ defmodule WalEx.Config do
   # would read as true on the next start.
   defp normalize_value(key, value) when key in @boolean_keys, do: to_boolean!(value, key)
   defp normalize_value(:slot_name, value) when not is_nil(value), do: parse_slot_name(value, nil)
+  defp normalize_value(:publication, value), do: parse_publication(value)
   defp normalize_value(_key, value), do: value
+
+  # Atom names (publication: :events) worked before validation existed, so they
+  # are turned into strings rather than rejected. nil and booleans are left for
+  # validate_publication/1 to reject.
+  defp parse_publication(names) when is_list(names), do: Enum.map(names, &parse_publication/1)
+
+  defp parse_publication(name) when is_atom(name) and not is_nil(name) and not is_boolean(name),
+    do: Atom.to_string(name)
+
+  defp parse_publication(other), do: other
 
   # In ack mode the slot only advances through status updates, so a periodic one
   # is on by default; otherwise it stays opt-in.

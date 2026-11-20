@@ -60,7 +60,8 @@ config :my_app, WalEx,
 
 ## Publication and subscriptions
 
-`publication` is one publication name or a list of names. The rules for a
+`publication` is one publication name or a list of names. Names can be strings
+or atoms (`:events` is read as `"events"`). The rules for a
 valid name are in [Postgres Setup](postgres-setup.md#publication).
 
 `subscriptions` lists the tables WalEx handles. To subscribe to every table in
@@ -124,7 +125,8 @@ config :my_app, WalEx,
   last `.`, so `MyApp.Repo` becomes `repo`. It replaces each run of characters
   other than `a-z` and `0-9` with `_`, and trims leading and trailing `_`. The
   result must be non-empty, or startup raises an `ArgumentError`.
-- `durable_slot` must be exactly `true` or `false`. `nil` (for example an unset
+- `durable_slot` must be `true` or `false`, or the strings `"true"` and
+  `"false"` (as read from an environment variable). `nil` (for example an unset
   environment variable) counts as `false`. Any other value raises an
   `ArgumentError`.
 - Only one process can be connected to a durable slot at a time. If the slot is

@@ -29,7 +29,7 @@ dependencies in `mix.exs`, then run `mix deps.get`:
 ```elixir
 def deps do
   [
-    {:walex, "~> 4.8.0"}
+    {:walex, "~> 4.9.0"}
   ]
 end
 ```

@@ -76,6 +76,7 @@ defmodule WalEx.Replication.PublisherTest do
   defp publisher_state, do: :sys.get_state(Registry.set_name(:set_gen_server, Publisher, @app))
 
   describe "a COMMIT that does not match the open transaction" do
+    @tag ack: true
     test "is an error and logs a warning" do
       :ok = Publisher.process_message_sync(begin_msg({0, 0x10}), @app)
 
@@ -88,6 +89,7 @@ defmodule WalEx.Replication.PublisherTest do
       assert log =~ "Dropping COMMIT at 1/FF: the open transaction is at 0/10"
     end
 
+    @tag ack: true
     test "with no open transaction is an error and logs a warning" do
       log =
         capture_log(fn ->
@@ -98,6 +100,7 @@ defmodule WalEx.Replication.PublisherTest do
       assert log =~ "Dropping COMMIT at 0/20: no transaction is open"
     end
 
+    @tag ack: true
     test "clears the open transaction" do
       :ok = Publisher.process_message_sync(begin_msg({0, 0x10}), @app)
 
@@ -121,6 +124,7 @@ defmodule WalEx.Replication.PublisherTest do
 
   describe "a change for an unknown relation" do
     for kind <- [:insert, :update, :delete, :truncate] do
+      @tag ack: true
       test "#{kind} is an error from the sync path and clears the transaction" do
         :ok = Publisher.process_message_sync(begin_msg({0, 0x10}), @app)
 
@@ -133,6 +137,7 @@ defmodule WalEx.Replication.PublisherTest do
       end
     end
 
+    @tag ack: true
     test "a truncate naming one unknown relation among known ones is an error" do
       :ok = Publisher.process_message_sync(relation_msg(7), @app)
       :ok = Publisher.process_message_sync(begin_msg({0, 0x10}), @app)
@@ -181,6 +186,7 @@ defmodule WalEx.Replication.PublisherTest do
     ]
 
     for kind <- [:insert, :update, :delete] do
+      @tag ack: true
       test "#{kind} is an error from the sync path and clears the transaction" do
         :ok = Publisher.process_message_sync(relation_msg(7, @two_columns), @app)
         :ok = Publisher.process_message_sync(begin_msg({0, 0x10}), @app)
@@ -196,6 +202,7 @@ defmodule WalEx.Replication.PublisherTest do
       end
     end
 
+    @tag ack: true
     test "a tuple with more values than columns is an error from the sync path" do
       :ok = Publisher.process_message_sync(relation_msg(7, []), @app)
       :ok = Publisher.process_message_sync(begin_msg({0, 0x10}), @app)
@@ -288,6 +295,48 @@ defmodule WalEx.Replication.PublisherTest do
     end
   end
 
+  # Custom middleware may call process_message_sync/2 in default mode, so it
+  # keeps master's behaviour there: always :ok, and only the bad change is lost.
+  describe "the sync path without ack_after_processing" do
+    @two_columns [
+      %Messages.Relation.Column{name: "id", type: "int4"},
+      %Messages.Relation.Column{name: "title", type: "text"}
+    ]
+
+    test "skips a change for an unknown relation and keeps the transaction" do
+      :ok = Publisher.process_message_sync(relation_msg(7), @app)
+      :ok = Publisher.process_message_sync(begin_msg({0, 0x10}), @app)
+      :ok = Publisher.process_message_sync(insert_msg(7), @app)
+
+      log =
+        capture_log(fn ->
+          assert :ok = Publisher.process_message_sync(insert_msg(42), @app)
+        end)
+
+      assert log =~ "unknown relation 42"
+      assert [%{type: "INSERT", change_index: 0}] = open_changes()
+    end
+
+    test "keeps a change whose tuple does not match its columns" do
+      :ok = Publisher.process_message_sync(relation_msg(7, @two_columns), @app)
+      :ok = Publisher.process_message_sync(begin_msg({0, 0x10}), @app)
+
+      log =
+        capture_log(fn ->
+          assert :ok = Publisher.process_message_sync(insert_msg(7), @app)
+        end)
+
+      assert log =~ "relation 7"
+      assert [%{type: "INSERT", record: %{id: 1}}] = open_changes()
+    end
+
+    test "replies :ok to a dropped COMMIT" do
+      capture_log(fn ->
+        assert :ok = Publisher.process_message_sync(commit({0, 0x20}), @app)
+      end)
+    end
+  end
+
   describe "change_index" do
     @sequence [:insert, :update, :delete, :truncate, :insert]
 
@@ -359,10 +408,12 @@ defmodule WalEx.Replication.PublisherTest do
       assert_received :dispatched
       assert %{transaction: nil} = publisher_state()
 
-      capture_log(fn ->
-        assert {:error, {:commit_mismatch, _}} =
-                 Publisher.process_message_sync(commit({0, 0x10}), @app)
-      end)
+      log =
+        capture_log(fn ->
+          assert :ok = Publisher.process_message_sync(commit({0, 0x10}), @app)
+        end)
+
+      assert log =~ "no transaction is open"
     end
   end
 

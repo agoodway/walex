@@ -15,7 +15,7 @@ where the `name` field changed:
     type: :update,
     source: %WalEx.Event.Source{
       name: "WalEx",
-      version: "4.8.0",
+      version: "4.9.0",
       db: "todos",
       schema: "public",
       table: "user",

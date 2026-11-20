@@ -51,11 +51,15 @@ defmodule WalEx.Replication.Publisher do
   Synchronously processes a decoded replication message; used by tests and
   synchronous middleware.
 
-  Returns `{:error, reason}` when the message could not be applied (a dropped
-  COMMIT, a change for an unknown relation or whose tuple does not match the
-  relation's columns, a crash while building the change, or a failed
-  dispatch), so the caller can avoid acknowledging it. Any open transaction is
-  discarded on error.
+  With `ack_after_processing`, returns `{:error, reason}` when the message
+  could not be applied (a dropped COMMIT, a change for an unknown relation or
+  whose tuple does not match the relation's columns, a crash while building
+  the change, or a failed dispatch), so the caller can avoid acknowledging it.
+  Any open transaction is discarded on error.
+
+  Without it, always returns `:ok` and applies the message exactly like
+  `process_message_async/2`: a change it cannot apply is skipped with a
+  warning and the rest of the transaction is kept.
   """
   @spec process_message_sync(struct(), atom()) :: :ok | {:error, term()}
   def process_message_sync(message, app_name) do
@@ -88,11 +92,19 @@ defmodule WalEx.Replication.Publisher do
   end
 
   @impl true
-  def handle_call(message, _from, state) do
+  def handle_call(message, _from, state = %State{ack_after_processing: true}) do
     case process_message_safely(message, state) do
       {:ok, state} -> {:reply, :ok, state}
       {:error, reason, state} -> {:reply, {:error, reason}, %{state | transaction: nil}}
     end
+  end
+
+  # Without ack_after_processing nothing acts on the result, so the synchronous
+  # path applies the message like the asynchronous one, as it always did: it
+  # skips what it cannot apply, keeps the open transaction and replies :ok.
+  def handle_call(message, _from, state) do
+    {:noreply, state} = handle_cast(message, state)
+    {:reply, :ok, state}
   end
 
   # With ack_after_processing the caller acknowledges only on :ok, so a crash
@@ -102,7 +114,7 @@ defmodule WalEx.Replication.Publisher do
   # one. This is the only place that has the stacktrace, so the failure is
   # logged here. Without it, and on the asynchronous path (no caller to tell),
   # a crash propagates as it always did.
-  defp process_message_safely(message, state = %State{ack_after_processing: true}) do
+  defp process_message_safely(message, state) do
     process_message(message, state)
   catch
     kind, reason ->
@@ -116,8 +128,6 @@ defmodule WalEx.Replication.Publisher do
 
       {:error, {:publisher_failed, failure}, state}
   end
-
-  defp process_message_safely(message, state), do: process_message(message, state)
 
   defp process_message(
          %{message: %Messages.Begin{final_lsn: final_lsn, commit_timestamp: commit_timestamp}},
@@ -316,8 +326,9 @@ defmodule WalEx.Replication.Publisher do
   end
 
   # Prepends one TRUNCATE change per known relation, and returns the ids of
-  # those not in the relation table, in message order. The asynchronous path
-  # keeps the known ones; the synchronous one discards the transaction.
+  # those not in the relation table, in message order. Without
+  # ack_after_processing the known ones are kept; with it, the synchronous
+  # path discards the transaction.
   defp truncate_changes(relation_ids, relations, lsn, commit_timestamp, changes) do
     {new_changes, unknown_ids} =
       Enum.reduce(relation_ids, {changes, []}, fn relation_id, {acc, unknown_ids} ->
@@ -343,9 +354,9 @@ defmodule WalEx.Replication.Publisher do
   end
 
   # Applying the rest of the transaction without this change would produce an
-  # incomplete one, so the synchronous caller is told. The state is returned
-  # without the unknown change: the asynchronous path keeps skipping it as
-  # before.
+  # incomplete one, so with ack_after_processing the synchronous caller is told.
+  # The state is returned without the unknown change: without it, the change is
+  # skipped as before.
   defp unknown_relation(state, relation_id) do
     Logger.warning("Change for unknown relation #{relation_id}; incomplete transaction")
 
@@ -353,10 +364,10 @@ defmodule WalEx.Replication.Publisher do
   end
 
   # A tuple whose length differs from the relation's column count builds a
-  # record with values missing or silently dropped. The change is kept, so the
-  # asynchronous path delivers it as it always did; the synchronous one
-  # discards the transaction rather than acknowledge it. A missing tuple (an
-  # UPDATE without its old row) is not a mismatch.
+  # record with values missing or silently dropped. The change is kept, so
+  # without ack_after_processing it is delivered as it always was; with it, the
+  # synchronous path discards the transaction rather than acknowledge it. A
+  # missing tuple (an UPDATE without its old row) is not a mismatch.
   defp check_columns(state, relation_id, columns, tuples) do
     if Enum.all?(tuples, &columns_match?(columns, &1)) do
       {:ok, state}
